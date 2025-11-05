@@ -13,7 +13,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 #
-FROM python:3.10 as builder
+FROM python:3.10 AS builder
 WORKDIR /code
 
 # Install Maven and Java for automated KJar builds
