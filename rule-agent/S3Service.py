@@ -301,7 +301,10 @@ class S3Service:
                 local_excel_path,
                 self.bucket_name,
                 s3_key,
-                ExtraArgs={'ContentType': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}
+                ExtraArgs={
+                    'ContentType': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'ACL': 'public-read'  # Make Excel file publicly accessible
+                }
             )
 
             s3_url = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{s3_key}"
