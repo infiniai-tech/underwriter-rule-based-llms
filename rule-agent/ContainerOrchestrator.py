@@ -115,6 +115,30 @@ class ContainerOrchestrator:
             # Create volume for the ruleapp
             volume_name = f"drools-{container_id}-maven"
 
+            # Verify network exists and get full network name
+            network_obj = None
+            try:
+                # Try to find the network
+                networks = client.networks.list(names=[self.docker_network])
+                if networks:
+                    network_obj = networks[0]
+                    print(f"✓ Found network: {network_obj.name} (ID: {network_obj.id[:12]})")
+                else:
+                    # Try to get by name with project prefix
+                    all_networks = client.networks.list()
+                    for net in all_networks:
+                        if net.name.endswith(self.docker_network) or net.name == self.docker_network:
+                            network_obj = net
+                            print(f"✓ Found network: {network_obj.name} (ID: {network_obj.id[:12]})")
+                            break
+
+                if not network_obj:
+                    raise Exception(f"Network '{self.docker_network}' not found. Available networks: {[n.name for n in all_networks]}")
+
+            except Exception as net_err:
+                print(f"⚠ Network lookup error: {net_err}")
+                raise
+
             print(f"Creating Docker container: {container_name} on port {port}")
 
             # Create and start container
@@ -124,7 +148,7 @@ class ContainerOrchestrator:
                 hostname=container_name,
                 detach=True,
                 ports={'8080/tcp': port},
-                network=self.docker_network,
+                network=network_obj.name,  # Use the actual network name found
                 environment={
                     'KIE_SERVER_ID': container_id,
                     'KIE_SERVER_USER': 'kieserver',
