@@ -36,6 +36,7 @@ services:
       - ./data:/data
       - ./uploads:/uploads
       - ./generated_rules:/generated_rules
+      - rule-cache:/data/rule_cache  # Persistent cache for deterministic rule generation
       - maven-repository:/opt/jboss/.m2/repository
       - /var/run/docker.sock:/var/run/docker.sock  # Docker-in-Docker for container orchestration
     build: rule-agent
@@ -50,6 +51,12 @@ services:
       - DATADIR=/data
       - UPLOAD_DIR=/uploads
       - DROOLS_RULES_DIR=/generated_rules
+
+      # Deterministic rule generation cache
+      - RULE_CACHE_DIR=/data/rule_cache
+
+      # Policy completeness - TOC-based extraction
+      - USE_TOC_EXTRACTION=true  # Systematic section-by-section analysis (recommended)
 
       # Container orchestration (separate containers per rule set)
       - USE_CONTAINER_ORCHESTRATOR=true  # Enabled for development and production
@@ -89,3 +96,4 @@ volumes:
   uploads:
   generated_rules:
   maven-repository:
+  rule-cache:  # Persistent cache for deterministic rule generation

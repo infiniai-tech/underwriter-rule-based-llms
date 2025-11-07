@@ -23,6 +23,7 @@ from ODMService import ODMService
 from ADSService import ADSService
 from DroolsService import DroolsService
 from UnderwritingWorkflow import UnderwritingWorkflow
+from RuleCacheService import get_rule_cache
 import json,os
 from Utils import find_descriptors
 
@@ -130,15 +131,18 @@ def process_policy_from_s3():
     s3_url = data['s3_url']
     policy_type = data.get('policy_type', 'general')
     bank_id = data.get('bank_id', None)  # Bank/tenant identifier
+    use_cache = data.get('use_cache', True)  # Enable deterministic caching by default
 
     # Process through workflow with S3 URL
     # container_id is auto-generated from bank_id and policy_type
     # LLM generates queries by analyzing the document
+    # Caching ensures identical documents produce identical rules
     try:
         result = underwritingWorkflow.process_policy_document(
             s3_url=s3_url,
             policy_type=policy_type,
-            bank_id=bank_id
+            bank_id=bank_id,
+            use_cache=use_cache
         )
         return jsonify(result)
     except Exception as e:
@@ -365,6 +369,106 @@ def test_rules():
         return jsonify({
             'status': 'error',
             'message': str(e)
+        }), 500
+
+# Cache management endpoints
+@app.route(ROUTE + '/cache/status', methods=['GET'])
+def get_cache_status():
+    """
+    Get cache statistics and list of cached documents
+
+    Returns:
+        JSON with cache directory, document count, and list of cached documents
+    """
+    try:
+        cache = get_rule_cache()
+        stats = cache.get_cache_stats()
+        cached_docs = cache.list_cached_documents()
+
+        return jsonify({
+            "status": "success",
+            "cache_stats": stats,
+            "cached_documents": cached_docs
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route(ROUTE + '/cache/clear', methods=['POST'])
+def clear_cache():
+    """
+    Clear rule cache (specific document or all)
+
+    Request body (optional):
+        {
+            "document_hash": "abc123..."  // Optional: clear specific document only
+        }
+
+    Returns:
+        JSON with status and message
+    """
+    try:
+        data = request.get_json() or {}
+        document_hash = data.get('document_hash')
+
+        cache = get_rule_cache()
+        cache.clear_cache(document_hash)
+
+        if document_hash:
+            message = f"Cache cleared for document: {document_hash[:16]}..."
+        else:
+            message = "All cache cleared successfully"
+
+        return jsonify({
+            "status": "success",
+            "message": message
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route(ROUTE + '/cache/get', methods=['GET'])
+def get_cached_rules():
+    """
+    Get cached rules for a specific document hash
+
+    Query parameters:
+        document_hash: SHA-256 hash of the document
+
+    Returns:
+        JSON with cached rule data or 404 if not found
+    """
+    try:
+        document_hash = request.args.get('document_hash')
+        if not document_hash:
+            return jsonify({
+                "status": "error",
+                "message": "document_hash parameter required"
+            }), 400
+
+        cache = get_rule_cache()
+        cached_result = cache.get_cached_rules(document_hash)
+
+        if cached_result:
+            return jsonify({
+                "status": "success",
+                "cached": True,
+                "data": cached_result
+            })
+        else:
+            return jsonify({
+                "status": "success",
+                "cached": False,
+                "message": f"No cached rules found for {document_hash[:16]}..."
+            }), 404
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
         }), 500
 
 # Swagger documentation endpoints

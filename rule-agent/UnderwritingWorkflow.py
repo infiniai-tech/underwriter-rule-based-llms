@@ -19,6 +19,7 @@ from RuleGeneratorAgent import RuleGeneratorAgent
 from DroolsDeploymentService import DroolsDeploymentService
 from S3Service import S3Service
 from ExcelRulesExporter import ExcelRulesExporter
+from RuleCacheService import get_rule_cache
 from PyPDF2 import PdfReader
 import json
 import os
@@ -39,6 +40,7 @@ class UnderwritingWorkflow:
         self.drools_deployment = DroolsDeploymentService()
         self.s3_service = S3Service()
         self.excel_exporter = ExcelRulesExporter()
+        self.rule_cache = get_rule_cache()
 
         # Validate Textract is configured (required)
         if not self.textract.isConfigured:
@@ -46,13 +48,15 @@ class UnderwritingWorkflow:
 
     def process_policy_document(self, s3_url: str,
                                 policy_type: str = "general",
-                                bank_id: str = None) -> Dict:
+                                bank_id: str = None,
+                                use_cache: bool = True) -> Dict:
         """
         Complete workflow to process a policy document and generate rules
 
         :param s3_url: S3 URL to policy PDF (required)
         :param policy_type: Type of policy (general, life, health, auto, property, loan, insurance, etc.)
         :param bank_id: Bank/Tenant identifier (e.g., 'chase', 'bofa', 'wells-fargo')
+        :param use_cache: Whether to use cached rules if available (default: True)
         :return: Result dictionary with all workflow steps
         """
 
@@ -114,6 +118,31 @@ class UnderwritingWorkflow:
                 "preview": document_text[:500] + "..." if len(document_text) > 500 else document_text
             }
             print(f"✓ Extracted {len(document_text)} characters")
+
+            # Step 1.5: Check cache for deterministic rule generation
+            print("\n" + "="*60)
+            print("Step 1.5: Checking cache for identical policy document...")
+            print("="*60)
+
+            # Compute document hash (for deterministic caching)
+            document_hash = self.rule_cache.compute_document_hash(document_text)
+            result["document_hash"] = document_hash
+            print(f"Document hash: {document_hash[:16]}...")
+
+            # Check if we have cached rules for this exact document
+            if use_cache:
+                cached_result = self.rule_cache.get_cached_rules(document_hash)
+                if cached_result:
+                    print("✓ Found cached rules - using deterministic cached version")
+                    # Return cached result with updated metadata
+                    cached_data = cached_result.get("rule_data", {})
+                    cached_data["status"] = "success"
+                    cached_data["source"] = "cache"
+                    cached_data["document_hash"] = document_hash
+                    cached_data["cached_timestamp"] = cached_result.get("timestamp")
+                    return cached_data
+
+            print("Cache miss - proceeding with rule generation...")
 
             # Step 2: LLM generates extraction queries by analyzing the document
             print("\n" + "="*60)
@@ -287,6 +316,15 @@ class UnderwritingWorkflow:
                 result["steps"]["s3_upload"] = s3_upload_results
 
             result["status"] = "completed"
+            result["source"] = "generated"
+
+            # Cache the successful result for future deterministic retrieval
+            print("\n" + "="*60)
+            print("Step 7: Caching rules for future deterministic generation...")
+            print("="*60)
+
+            self.rule_cache.cache_rules(document_hash, result)
+
             print("\n" + "="*60)
             print("✓ Workflow completed successfully!")
             print("="*60)
