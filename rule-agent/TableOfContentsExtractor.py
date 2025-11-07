@@ -274,20 +274,48 @@ Extract ALL policies from this section.""")
             end_line = next_section.get("line_number", len(lines)) if next_section else len(lines)
 
             content_lines = lines[start_line:end_line]
-            return '\n'.join(content_lines)
+            content = '\n'.join(content_lines)
+            print(f"  DEBUG: Extracted content using line numbers {start_line} to {end_line}: {len(content)} chars")
+            return content
 
         # Otherwise, search for section by title
         section_title = section.get("section_title", "")
         section_num = section.get("section_number", "")
 
-        # Find section start
+        print(f"  DEBUG: Searching for section '{section_num}' - '{section_title}'")
+
+        # Find section start - use flexible matching
         start_idx = None
         for i, line in enumerate(lines):
+            line_stripped = line.strip()
+
+            # Try multiple matching strategies
+            # Strategy 1: Both number and title in same line
             if section_num in line and section_title in line:
                 start_idx = i
+                print(f"  DEBUG: Found section at line {i} (both in same line)")
+                break
+
+            # Strategy 2: Number followed by title (possibly on next line or same line)
+            if section_num and line_stripped.startswith(section_num):
+                # Check if title is on same line or next line
+                if section_title in line:
+                    start_idx = i
+                    print(f"  DEBUG: Found section at line {i} (title on same line)")
+                    break
+                elif i + 1 < len(lines) and section_title in lines[i + 1]:
+                    start_idx = i
+                    print(f"  DEBUG: Found section at line {i} (title on next line)")
+                    break
+
+            # Strategy 3: Title match only (as fallback)
+            if section_title and len(section_title) > 5 and section_title in line:
+                start_idx = i
+                print(f"  DEBUG: Found section at line {i} (title match only)")
                 break
 
         if start_idx is None:
+            print(f"  DEBUG: Could not find section start for '{section_num}' - '{section_title}'")
             return ""
 
         # Find section end (next section or end of document)
@@ -295,13 +323,24 @@ Extract ALL policies from this section.""")
         if next_section:
             next_title = next_section.get("section_title", "")
             next_num = next_section.get("section_number", "")
+
             for i in range(start_idx + 1, len(lines)):
-                if next_num in lines[i] and next_title in lines[i]:
+                line_stripped = lines[i].strip()
+
+                # Use same flexible matching for end boundary
+                if (next_num and next_title and next_num in lines[i] and next_title in lines[i]):
                     end_idx = i
+                    print(f"  DEBUG: Found next section at line {i}")
+                    break
+                elif next_num and line_stripped.startswith(next_num):
+                    end_idx = i
+                    print(f"  DEBUG: Found next section (by number) at line {i}")
                     break
 
         content_lines = lines[start_idx:end_idx]
-        return '\n'.join(content_lines)
+        content = '\n'.join(content_lines)
+        print(f"  DEBUG: Extracted {len(content)} chars from lines {start_idx} to {end_idx}")
+        return content
 
     def analyze_section(self, section: Dict, section_content: str) -> Dict:
         """

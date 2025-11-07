@@ -257,20 +257,38 @@ class S3Service:
         """
         Parse S3 URL to extract bucket and key
 
-        :param s3_url: S3 URL (https://bucket.s3.region.amazonaws.com/key)
+        :param s3_url: S3 URL in either format:
+                       - s3://bucket/key/path/file.pdf
+                       - https://bucket.s3.region.amazonaws.com/key/path/file.pdf
         :return: Dict with 'bucket' and 'key'
         """
         try:
-            # Format: https://bucket.s3.region.amazonaws.com/key/path/file.pdf
-            parts = s3_url.split('.amazonaws.com/')
-            if len(parts) == 2:
-                # Extract bucket from domain
-                domain_parts = s3_url.split('/')
-                bucket = domain_parts[2].split('.')[0]
-                key = parts[1]
-                return {"bucket": bucket, "key": key}
+            # Format 1: s3://bucket/key/path/file.pdf
+            if s3_url.startswith('s3://'):
+                # Remove s3:// prefix
+                s3_path = s3_url[5:]
+                # Split on first slash to separate bucket from key
+                parts = s3_path.split('/', 1)
+                if len(parts) == 2:
+                    bucket = parts[0]
+                    key = parts[1]
+                    return {"bucket": bucket, "key": key}
+                else:
+                    return {"error": "Invalid S3 URL format: missing key after bucket"}
+
+            # Format 2: https://bucket.s3.region.amazonaws.com/key/path/file.pdf
+            elif '.amazonaws.com/' in s3_url:
+                parts = s3_url.split('.amazonaws.com/')
+                if len(parts) == 2:
+                    # Extract bucket from domain
+                    domain_parts = s3_url.split('/')
+                    bucket = domain_parts[2].split('.')[0]
+                    key = parts[1]
+                    return {"bucket": bucket, "key": key}
+                else:
+                    return {"error": "Invalid S3 URL format: could not parse HTTPS URL"}
             else:
-                return {"error": "Invalid S3 URL format"}
+                return {"error": f"Invalid S3 URL format. Expected 's3://bucket/key' or 'https://bucket.s3.region.amazonaws.com/key', got: {s3_url[:50]}..."}
         except Exception as e:
             return {"error": f"Error parsing S3 URL: {str(e)}"}
 

@@ -163,9 +163,19 @@ class TextractService:
         :param queries: List of questions to ask about the document
         :return: Extracted data with answers and confidence scores
         """
+        # AWS Textract limit: Maximum 30 queries per API call
+        MAX_QUERIES_PER_CALL = 30
+
+        if len(queries) > MAX_QUERIES_PER_CALL:
+            print(f"⚠ WARNING: {len(queries)} queries requested, but AWS Textract supports maximum {MAX_QUERIES_PER_CALL} queries per call")
+            print(f"  Processing first {MAX_QUERIES_PER_CALL} queries only...")
+            queries = queries[:MAX_QUERIES_PER_CALL]
+
         try:
             # Start async analysis job
-            print(f"Starting asynchronous Textract analysis job...")
+            print(f"Starting asynchronous Textract analysis job with {len(queries)} queries...")
+            print(f"DEBUG: S3 bucket={s3_bucket}, key={s3_key}")
+
             response = self.textract_client.start_document_analysis(
                 DocumentLocation={
                     'S3Object': {
@@ -237,7 +247,11 @@ class TextractService:
             return {"error": f"Textract job timed out after {max_wait_time}s"}
 
         except Exception as e:
-            print(f"Error in async Textract analysis: {e}")
+            print(f"✗ Error in async Textract analysis: {e}")
+            print(f"  Exception type: {type(e).__name__}")
+            print(f"  Exception details: {str(e)}")
+            import traceback
+            print(f"  Traceback: {traceback.format_exc()}")
             return {"error": f"Async Textract analysis failed: {str(e)}"}
 
     def _parse_textract_response(self, response: Dict, queries: List[str]) -> Dict:

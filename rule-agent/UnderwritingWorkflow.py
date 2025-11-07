@@ -129,20 +129,21 @@ class UnderwritingWorkflow:
             result["document_hash"] = document_hash
             print(f"Document hash: {document_hash[:16]}...")
 
+            # CACHING TEMPORARILY DISABLED FOR TESTING
             # Check if we have cached rules for this exact document
-            if use_cache:
-                cached_result = self.rule_cache.get_cached_rules(document_hash)
-                if cached_result:
-                    print("✓ Found cached rules - using deterministic cached version")
-                    # Return cached result with updated metadata
-                    cached_data = cached_result.get("rule_data", {})
-                    cached_data["status"] = "success"
-                    cached_data["source"] = "cache"
-                    cached_data["document_hash"] = document_hash
-                    cached_data["cached_timestamp"] = cached_result.get("timestamp")
-                    return cached_data
+            # if use_cache:
+            #     cached_result = self.rule_cache.get_cached_rules(document_hash)
+            #     if cached_result:
+            #         print("✓ Found cached rules - using deterministic cached version")
+            #         # Return cached result with updated metadata
+            #         cached_data = cached_result.get("rule_data", {})
+            #         cached_data["status"] = "success"
+            #         cached_data["source"] = "cache"
+            #         cached_data["document_hash"] = document_hash
+            #         cached_data["cached_timestamp"] = cached_result.get("timestamp")
+            #         return cached_data
 
-            print("Cache miss - proceeding with rule generation...")
+            print("Cache disabled - proceeding with fresh rule generation...")
 
             # Step 2: LLM generates extraction queries by analyzing the document
             print("\n" + "="*60)

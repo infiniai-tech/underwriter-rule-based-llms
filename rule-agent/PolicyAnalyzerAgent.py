@@ -224,6 +224,22 @@ IMPORTANT:
         all_policies = toc_result.get("all_policies", [])
         section_results = toc_result.get("section_results", [])
 
+        # FALLBACK: If TOC extraction found 0 queries, fall back to full document analysis
+        if len(queries) == 0:
+            print("\n⚠ WARNING: TOC-based extraction found 0 queries")
+            print("  Falling back to full document analysis (chunked mode)...\n")
+
+            # Use chunked analysis as fallback
+            if len(document_text) > 30000:
+                fallback_result = self._analyze_in_chunks(document_text)
+            else:
+                fallback_result = self._analyze_full_document(document_text)
+
+            # Add fallback metadata
+            fallback_result["extraction_method"] = "toc_failed_fallback_to_chunked"
+            fallback_result["toc_failure_reason"] = "No queries generated from TOC extraction"
+            return fallback_result
+
         # Extract key sections from TOC
         key_sections = [
             f"{s['section_number']} - {s['section_title']}"
