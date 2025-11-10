@@ -106,14 +106,20 @@ IMPORTANT:
 - Extract EVERY distinct policy in this section
 - Include both positive rules (what IS allowed) and negative rules (what is NOT allowed)
 - Generate specific Textract queries for each policy
-- Mark severity: critical = affects approval/denial, important = affects terms"""),
+- Mark severity: critical = affects approval/denial, important = affects terms
+
+CRITICAL RULE TO PREVENT HALLUCINATION:
+- ONLY extract policies that are EXPLICITLY stated in the section content
+- If the section contains only a title/header with no actual policy content, return an EMPTY list
+- DO NOT invent, assume, or infer policies that are not directly written in the text
+- If you're unsure whether something is a policy, DO NOT include it"""),
             ("user", """Section Number: {section_number}
 Section Title: {section_title}
 
 Section Content:
 {section_content}
 
-Extract ALL policies from this section.""")
+Extract ALL policies from this section. Remember: ONLY extract policies that are explicitly written in the content above. If there are no policies in this content, return an empty list.""")
         ])
 
         self.toc_chain = self.toc_prompt | self.llm | JsonOutputParser()
@@ -324,17 +330,27 @@ Extract ALL policies from this section.""")
             next_title = next_section.get("section_title", "")
             next_num = next_section.get("section_number", "")
 
+            print(f"  DEBUG: Looking for next section: '{next_num}' - '{next_title}'")
+
             for i in range(start_idx + 1, len(lines)):
                 line_stripped = lines[i].strip()
 
-                # Use same flexible matching for end boundary
+                # Strategy 1: Both number and title in same line
                 if (next_num and next_title and next_num in lines[i] and next_title in lines[i]):
                     end_idx = i
-                    print(f"  DEBUG: Found next section at line {i}")
+                    print(f"  DEBUG: Found next section at line {i} (both number and title)")
                     break
+
+                # Strategy 2: Line starts with next section number
                 elif next_num and line_stripped.startswith(next_num):
                     end_idx = i
-                    print(f"  DEBUG: Found next section (by number) at line {i}")
+                    print(f"  DEBUG: Found next section at line {i} (by number)")
+                    break
+
+                # Strategy 3: Title match only (as fallback) - same as start matching
+                elif next_title and len(next_title) > 5 and next_title in lines[i]:
+                    end_idx = i
+                    print(f"  DEBUG: Found next section at line {i} (by title)")
                     break
 
         content_lines = lines[start_idx:end_idx]
@@ -424,7 +440,7 @@ Extract ALL policies from this section.""")
             next_section = toc[i + 1] if i + 1 < len(toc) else None
             section_content = self.extract_section_content(document_text, section, next_section)
 
-            if len(section_content.strip()) < 50:
+            if len(section_content.strip()) < 30:
                 print(f"  ⚠ Section too short ({len(section_content)} chars), skipping...")
                 continue
 

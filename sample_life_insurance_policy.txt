@@ -1,51 +1,103 @@
 LIFE INSURANCE POLICY DOCUMENT
-Sample Insurance Company
+Chase Insurance Company
 Policy Number: LI-2024-001
+Effective Date: January 1, 2024
 
 COVERAGE DETAILS
 
-Maximum Coverage Amount: $500,000
+Maximum Coverage Amount: $1,000,000
 Minimum Coverage Amount: $50,000
+Automatic Approval Limit: $500,000
 
 ELIGIBILITY REQUIREMENTS
 
 Age Requirements:
-- Minimum Age: 18 years
-- Maximum Age: 65 years
+- Minimum Age: 18 years old (MANDATORY - Applications under 18 are AUTOMATICALLY REJECTED)
+- Maximum Age: 65 years old (MANDATORY - Applications over 65 are AUTOMATICALLY REJECTED)
+- Preferred Age Range: 25-55 years (Best rates)
+
+Credit Score Requirements:
+- Minimum Credit Score: 600 (MANDATORY - Applications under 600 are AUTOMATICALLY REJECTED)
+- Preferred Credit Score: 700+ (Standard rates)
+- Excellent Credit Score: 750+ (Discounted rates)
+
+Income Requirements:
+- Minimum Annual Income: $25,000
+- Coverage cannot exceed 10x annual income
+- Income verification required for coverage over $500,000
 
 Health Requirements:
-- Applicants must complete a medical examination
-- Pre-existing conditions may affect eligibility
+- Health status must be declared: excellent, good, fair, or poor
+- Poor health status: AUTOMATICALLY REJECTED
+- Fair health status: Manual underwriting review required
+- Medical examination required for coverage over $500,000
+
+AUTOMATIC REJECTION CRITERIA
+
+Applications will be AUTOMATICALLY REJECTED if ANY of the following conditions are met:
+1. Age under 18 or over 65 years
+2. Credit score below 600
+3. Health status declared as "poor"
+4. Annual income below $25,000
+5. Requested coverage exceeds 10x annual income
+6. Smoking status combined with age over 60 and coverage over $300,000
+7. DUI conviction within the past 5 years
+8. Hazardous occupation without additional riders
 
 PREMIUM CALCULATION
 
 Base Premium Factors:
-- Age of applicant
+- Age of applicant (primary factor)
 - Coverage amount requested
 - Health status
 - Smoking status
+- Credit score tier
 
 Premium Multipliers:
 - Non-smoker: 1.0x base rate
-- Smoker: 1.5x base rate
-- Excellent health: 0.9x base rate
+- Smoker: 1.8x base rate
+- Excellent health: 0.85x base rate
 - Good health: 1.0x base rate
-- Fair health: 1.3x base rate
-- Poor health: Not eligible
+- Fair health: 1.5x base rate
+- Credit score 750+: 0.95x base rate
+- Credit score 700-749: 1.0x base rate
+- Credit score 600-699: 1.2x base rate
 
-COVERAGE TIERS
+Age-Based Premium Adjustments:
+- Ages 18-25: 1.1x base rate
+- Ages 26-35: 1.0x base rate (best rates)
+- Ages 36-45: 1.2x base rate
+- Ages 46-55: 1.5x base rate
+- Ages 56-65: 2.0x base rate
 
-Tier 1: $50,000 - $100,000
-- Ages 18-55: Automatic approval for excellent/good health
-- Ages 56-65: Manual review required
+COVERAGE TIERS AND APPROVAL RULES
 
-Tier 2: $100,001 - $250,000
-- Ages 18-50: Automatic approval for excellent/good health
-- Ages 51-65: Manual review required
+Tier 1: $50,000 - $100,000 (Standard Coverage)
+- Ages 18-55, credit score 600+, good/excellent health: AUTOMATIC APPROVAL
+- Ages 56-65, credit score 600+, good/excellent health: AUTOMATIC APPROVAL with 2.0x age multiplier
+- Fair health: REQUIRES MANUAL REVIEW
 
-Tier 3: $250,001 - $500,000
-- All ages: Manual underwriting review required
-- Medical exam mandatory
+Tier 2: $100,001 - $300,000 (Enhanced Coverage)
+- Ages 18-50, credit score 700+, good/excellent health, non-smoker: AUTOMATIC APPROVAL
+- Ages 18-50, credit score 700+, good/excellent health, smoker: AUTOMATIC APPROVAL with 1.8x smoking multiplier
+- Ages 51-65, credit score 700+, good/excellent health: REQUIRES MANUAL REVIEW
+- Credit score 600-699: REQUIRES MANUAL REVIEW
+- Fair health: REQUIRES MANUAL REVIEW
+
+Tier 3: $300,001 - $500,000 (Premium Coverage)
+- Ages 18-45, credit score 750+, excellent health, non-smoker: AUTOMATIC APPROVAL
+- Ages 18-45, credit score 700-749, good/excellent health: AUTOMATIC APPROVAL with higher premium
+- Ages 46-65: REQUIRES MANUAL REVIEW
+- Any smoker: REQUIRES MANUAL REVIEW
+- Fair health: AUTOMATICALLY REJECTED
+- Medical exam MANDATORY
+
+Tier 4: $500,001 - $1,000,000 (High-Value Coverage)
+- ALL applications: REQUIRES MANUAL UNDERWRITING REVIEW
+- Ages 18-40, credit score 750+, excellent health, non-smoker: Fast-track manual review
+- Medical exam MANDATORY
+- Financial documentation MANDATORY
+- Income verification MANDATORY
 
 EXCLUSIONS
 

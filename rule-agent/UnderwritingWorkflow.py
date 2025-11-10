@@ -20,6 +20,7 @@ from DroolsDeploymentService import DroolsDeploymentService
 from S3Service import S3Service
 from ExcelRulesExporter import ExcelRulesExporter
 from RuleCacheService import get_rule_cache
+from DatabaseService import get_database_service
 from PyPDF2 import PdfReader
 import json
 import os
@@ -41,6 +42,7 @@ class UnderwritingWorkflow:
         self.s3_service = S3Service()
         self.excel_exporter = ExcelRulesExporter()
         self.rule_cache = get_rule_cache()
+        self.db_service = get_database_service()
 
         # Validate Textract is configured (required)
         if not self.textract.isConfigured:
@@ -281,11 +283,13 @@ class UnderwritingWorkflow:
                         print(f"Warning: Could not delete temp DRL file: {e}")
 
                 # Generate and upload Excel spreadsheet with rules
-                if drl_content and bank_id:
+                if drl_content:
                     try:
                         print("✓ Generating Excel spreadsheet from rules...")
+                        # Use container_id as fallback if bank_id is not provided
+                        effective_bank_id = bank_id if bank_id else policy_type
                         excel_path = self.excel_exporter.create_excel_file(
-                            drl_content, bank_id, policy_type, container_id, version
+                            drl_content, effective_bank_id, policy_type, container_id, version
                         )
 
                         # Upload Excel to S3
@@ -315,6 +319,38 @@ class UnderwritingWorkflow:
                         }
 
                 result["steps"]["s3_upload"] = s3_upload_results
+
+                # Update database with S3 URLs
+                try:
+                    print("\n" + "="*60)
+                    print("Step 6.5: Updating container registry in database...")
+                    print("="*60)
+
+                    # Ensure bank and policy type exist in database
+                    if bank_id:
+                        self.db_service.create_bank(bank_id, bank_id.replace('_', ' ').title())
+                    self.db_service.create_policy_type(policy_type, policy_type.replace('_', ' ').title())
+
+                    # Update container with S3 URLs
+                    container = self.db_service.get_container_by_id(container_id)
+                    if container:
+                        # Container exists (created by ContainerOrchestrator), update URLs
+                        self.db_service.update_container_urls(
+                            container_id,
+                            s3_jar_url=result.get("jar_s3_url"),
+                            s3_drl_url=result.get("drl_s3_url"),
+                            s3_excel_url=result.get("excel_s3_url"),
+                            s3_policy_url=s3_url
+                        )
+                        print(f"✓ Updated container {container_id} in database with S3 URLs")
+                    else:
+                        # Container doesn't exist yet (manual deployment or error), create entry
+                        print(f"⚠ Container {container_id} not found in database - may need manual registration")
+
+                except Exception as db_error:
+                    print(f"⚠ Failed to update database: {db_error}")
+                    # Don't fail the workflow for database errors
+                    result["database_update_error"] = str(db_error)
 
             result["status"] = "completed"
             result["source"] = "generated"

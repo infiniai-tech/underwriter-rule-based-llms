@@ -1,14 +1,20 @@
 """
 Container Orchestrator - Manages separate Drools containers per rule set
 Supports both Docker (development) and Kubernetes (production)
+Uses PostgreSQL database for persistent container registry
 """
 
 import os
 import json
 import time
 import requests
+import logging
 from typing import Dict, Optional, List
 from datetime import datetime
+
+from DatabaseService import get_database_service
+
+logger = logging.getLogger(__name__)
 
 
 class ContainerOrchestrator:
@@ -22,7 +28,7 @@ class ContainerOrchestrator:
 
     def __init__(self):
         self.platform = os.getenv('ORCHESTRATION_PLATFORM', 'docker')  # 'docker' or 'kubernetes'
-        self.registry_file = '/data/container_registry.json'
+        self.registry_file = '/data/container_registry.json'  # Legacy JSON registry (for migration)
         self.base_port = 8081  # Starting port for Drools containers
 
         # Docker settings
@@ -33,43 +39,158 @@ class ContainerOrchestrator:
         self.k8s_namespace = os.getenv('K8S_NAMESPACE', 'underwriting')
         self.k8s_service_type = os.getenv('K8S_SERVICE_TYPE', 'ClusterIP')
 
-        # Load container registry
-        self.registry = self._load_registry()
+        # Database service for persistent registry
+        self.db_service = get_database_service()
 
-        print(f"Container Orchestrator initialized for platform: {self.platform}")
+        # Migrate legacy JSON registry to database if exists
+        self._migrate_legacy_registry()
+
+        logger.info(f"Container Orchestrator initialized for platform: {self.platform}")
 
     def _load_registry(self) -> Dict:
-        """Load the container registry from disk"""
+        """Load the container registry from disk (LEGACY - for migration only)"""
         if os.path.exists(self.registry_file):
             with open(self.registry_file, 'r') as f:
                 return json.load(f)
         return {}
 
     def _save_registry(self):
-        """Save the container registry to disk"""
-        os.makedirs(os.path.dirname(self.registry_file), exist_ok=True)
-        with open(self.registry_file, 'w') as f:
-            json.dump(self.registry, f, indent=2)
+        """DEPRECATED: Registry is now saved to database automatically"""
+        # This method is kept for backward compatibility but does nothing
+        pass
+
+    def _migrate_legacy_registry(self):
+        """Migrate legacy JSON registry to PostgreSQL database"""
+        if not os.path.exists(self.registry_file):
+            logger.info("No legacy registry file found, skipping migration")
+            return
+
+        try:
+            legacy_registry = self._load_registry()
+            if not legacy_registry:
+                logger.info("Legacy registry is empty, skipping migration")
+                return
+
+            logger.info(f"Migrating {len(legacy_registry)} containers from JSON to database...")
+
+            for container_id, container_info in legacy_registry.items():
+                # Extract bank_id and policy_type_id from container_id
+                # Format: {bank_id}-{policy_type}-underwriting-rules
+                parts = container_id.split('-')
+                if len(parts) >= 2:
+                    bank_id = parts[0]
+                    policy_type_id = parts[1]
+
+                    # Ensure bank and policy type exist in database
+                    self.db_service.create_bank(bank_id, bank_id.replace('_', ' ').title())
+                    self.db_service.create_policy_type(policy_type_id, policy_type_id.replace('_', ' ').title())
+
+                    # Check if container already exists in database
+                    existing = self.db_service.get_container_by_id(container_id)
+                    if existing:
+                        logger.info(f"  Container {container_id} already exists in database, skipping")
+                        continue
+
+                    # Register container in database
+                    container_data = {
+                        'container_id': container_id,
+                        'bank_id': bank_id,
+                        'policy_type_id': policy_type_id,
+                        'platform': container_info.get('platform', self.platform),
+                        'container_name': container_info.get('container_name', container_id),
+                        'endpoint': container_info['endpoint'],
+                        'port': container_info.get('port'),
+                        'status': container_info.get('status', 'running'),
+                        'deployed_at': datetime.fromisoformat(container_info['created_at']) if 'created_at' in container_info else datetime.now()
+                    }
+
+                    self.db_service.register_container(container_data)
+                    logger.info(f"  Migrated container: {container_id}")
+
+            # Rename legacy file to prevent re-migration
+            os.rename(self.registry_file, f"{self.registry_file}.migrated")
+            logger.info("Legacy registry migration completed successfully")
+
+        except Exception as e:
+            logger.error(f"Error migrating legacy registry: {e}")
+            # Don't fail if migration fails - continue with database
 
     def get_container_endpoint(self, container_id: str) -> Optional[str]:
         """
         Get the endpoint URL for a container by its container_id (rule set name)
 
+        This method performs health checking to ensure the container is actually running
+        before returning the endpoint. If the container is stopped, it returns None
+        and updates the database status accordingly.
+
         Args:
             container_id: The KIE container ID (e.g., 'chase-insurance-underwriting-rules')
 
         Returns:
-            Endpoint URL or None if not found
+            Endpoint URL or None if not found or not healthy
         """
-        if container_id in self.registry:
-            return self.registry[container_id]['endpoint']
-        return None
+        # Get container from database
+        container = self.db_service.get_container_by_id(container_id)
+        if not container or not container['is_active']:
+            return None
+
+        endpoint = container['endpoint']
+
+        # Health check: Verify container is actually running
+        if self.platform == 'docker':
+            is_healthy = self._check_docker_container_health(container_id)
+        elif self.platform == 'kubernetes':
+            is_healthy = self._check_k8s_pod_health(container_id)
+        else:
+            # Unknown platform, assume healthy
+            is_healthy = True
+
+        if is_healthy:
+            # Update status to running if it was previously stopped
+            if container['status'] != 'running':
+                self.db_service.update_container_status(
+                    container_id,
+                    status='running',
+                    health_status='healthy'
+                )
+            return endpoint
+        else:
+            # Container is not healthy, update database and return None
+            logger.warning(f"Container {container_id} is not healthy (stopped or unreachable)")
+            if container['status'] != 'stopped':
+                self.db_service.update_container_status(
+                    container_id,
+                    status='unhealthy',
+                    health_status='unhealthy'
+                )
+            return None
 
     def list_containers(self) -> Dict:
-        """List all managed Drools containers"""
+        """
+        List all managed Drools containers with updated health status from database
+        """
+        # Get all active containers from database
+        containers = self.db_service.list_containers(active_only=False)
+
+        # Convert to legacy format for backward compatibility
+        result = {}
+        for container in containers:
+            result[container.container_id] = {
+                'platform': container.platform,
+                'container_name': container.container_name,
+                'endpoint': container.endpoint,
+                'port': container.port,
+                'status': container.status,
+                'health_status': container.health_status,
+                'bank_id': container.bank_id,
+                'policy_type_id': container.policy_type_id,
+                'deployed_at': container.deployed_at.isoformat() if container.deployed_at else None,
+                'is_active': container.is_active
+            }
+
         return {
             "platform": self.platform,
-            "containers": self.registry
+            "containers": result
         }
 
     def create_drools_container(self, container_id: str, ruleapp_path: str) -> Dict:
@@ -106,18 +227,19 @@ class ContainerOrchestrator:
             # Check if container already exists
             existing = self._check_existing_docker_container(client, container_name)
             if existing:
-                # Check if already in registry
-                if container_id in self.registry:
+                # Check if already in database
+                db_container = self.db_service.get_container_by_id(container_id)
+                if db_container:
                     return {
                         "status": "exists",
                         "message": f"Container {container_name} already exists",
-                        "endpoint": self.registry[container_id]['endpoint']
+                        "endpoint": db_container['endpoint']
                     }
                 else:
-                    # Container exists but not in registry - return error to avoid conflicts
+                    # Container exists but not in database - return error to avoid conflicts
                     return {
                         "status": "error",
-                        "message": f"Container {container_name} already exists but not in registry. Please delete it first: docker rm -f {container_name}"
+                        "message": f"Container {container_name} already exists but not in database. Please delete it first: docker rm -f {container_name}"
                     }
 
             # Create volume for the ruleapp
@@ -182,17 +304,30 @@ class ContainerOrchestrator:
             endpoint = f"http://{container_name}:8080"
             self._wait_for_container_health(endpoint, container_name)
 
-            # Register in registry
-            self.registry[container_id] = {
+            # Extract bank_id and policy_type from container_id
+            # Format: {bank_id}-{policy_type}-underwriting-rules
+            parts = container_id.split('-')
+            bank_id = parts[0] if len(parts) >= 1 else 'unknown'
+            policy_type_id = parts[1] if len(parts) >= 2 else 'unknown'
+
+            # Ensure bank and policy type exist in database
+            self.db_service.create_bank(bank_id, bank_id.replace('_', ' ').title())
+            self.db_service.create_policy_type(policy_type_id, policy_type_id.replace('_', ' ').title())
+
+            # Register in database
+            container_data = {
+                'container_id': container_id,
+                'bank_id': bank_id,
+                'policy_type_id': policy_type_id,
                 'platform': 'docker',
                 'container_name': container_name,
-                'docker_container_id': container.id,
                 'endpoint': endpoint,
                 'port': port,
-                'created_at': datetime.now().isoformat(),
-                'status': 'running'
+                'status': 'running',
+                'health_status': 'healthy'
             }
-            self._save_registry()
+            self.db_service.register_container(container_data)
+            logger.info(f"Registered container {container_id} in database")
 
             return {
                 "status": "success",
@@ -447,8 +582,10 @@ class ContainerOrchestrator:
             }
 
     def _get_next_available_port(self) -> int:
-        """Get next available port for Docker containers"""
-        used_ports = [info['port'] for info in self.registry.values() if 'port' in info]
+        """Get next available port for Docker containers from database"""
+        containers = self.db_service.list_containers(active_only=True)
+        used_ports = [c['port'] for c in containers if c.get('port') is not None]
+
         port = self.base_port
         while port in used_ports:
             port += 1
@@ -515,6 +652,155 @@ class ContainerOrchestrator:
             time.sleep(5)
 
         raise TimeoutError(f"Deployment {deployment_name} did not become ready within {timeout}s")
+
+    def _sync_container_statuses(self):
+        """
+        Sync registry container statuses with actual container states
+
+        This updates the 'status' field in the registry to reflect reality
+        """
+        needs_save = False
+
+        for container_id, container_info in self.registry.items():
+            current_status = container_info.get('status', 'unknown')
+
+            # Check actual health
+            if self.platform == 'docker':
+                is_healthy = self._check_docker_container_health(container_id)
+            elif self.platform == 'kubernetes':
+                is_healthy = self._check_k8s_pod_health(container_id)
+            else:
+                # Unknown platform, don't update
+                continue
+
+            # Update status if changed
+            new_status = 'running' if is_healthy else 'stopped'
+            if current_status != new_status:
+                container_info['status'] = new_status
+                needs_save = True
+                print(f"Registry sync: {container_id} status changed from '{current_status}' to '{new_status}'")
+
+        if needs_save:
+            self._save_registry()
+
+    def _check_docker_container_health(self, container_id: str) -> bool:
+        """
+        Check if a Docker container is healthy (running and responsive)
+
+        Args:
+            container_id: The KIE container ID
+
+        Returns:
+            True if container is running and healthy, False otherwise
+        """
+        import docker
+
+        try:
+            # Get container from database
+            container_info = self.db_service.get_container_by_id(container_id)
+            if not container_info:
+                print(f"  Health check: {container_id} not in database")
+                return False
+
+            container_name = container_info.get('container_name')
+            if not container_name:
+                print(f"  Health check: {container_id} has no container_name")
+                return False
+
+            print(f"  Health check: Checking Docker container '{container_name}'...")
+
+            # Check Docker container status
+            client = docker.from_env()
+            try:
+                container = client.containers.get(container_name)
+
+                # Check if container is running
+                if container.status != 'running':
+                    print(f"  Health check: Container status is '{container.status}' (not running)")
+                    return False
+
+                print(f"  Health check: Container is running, checking HTTP endpoint...")
+
+                # Quick health check: try to reach the KIE server endpoint
+                endpoint = container_info['endpoint']
+                health_url = f"{endpoint}/kie-server/services/rest/server"
+                print(f"  Health check: Testing endpoint {health_url}")
+                try:
+                    response = requests.get(
+                        health_url,
+                        auth=('kieserver', 'kieserver1!'),
+                        timeout=2
+                    )
+                    print(f"  Health check: Got HTTP {response.status_code}")
+                    if response.status_code == 200:
+                        print(f"  Health check: ✓ Container is healthy (HTTP 200)")
+                        return True
+                    else:
+                        print(f"  Health check: Container responded with HTTP {response.status_code}")
+                        print(f"  Health check: Response body: {response.text[:200]}")
+                        return False
+                except Exception as http_err:
+                    # Container is running but not responsive yet
+                    print(f"  Health check: Container not responsive ({type(http_err).__name__}: {str(http_err)})")
+                    return False
+
+            except docker.errors.NotFound:
+                # Container doesn't exist
+                print(f"  Health check: Container not found in Docker")
+                return False
+
+        except Exception as e:
+            print(f"  Health check: Error checking Docker container health: {e}")
+            return False
+
+    def _check_k8s_pod_health(self, container_id: str) -> bool:
+        """
+        Check if a Kubernetes pod is healthy (running and ready)
+
+        Args:
+            container_id: The KIE container ID
+
+        Returns:
+            True if pod is running and ready, False otherwise
+        """
+        from kubernetes import client, config
+
+        try:
+            if container_id not in self.registry:
+                return False
+
+            container_info = self.registry[container_id]
+            deployment_name = container_info.get('deployment_name')
+            namespace = container_info.get('namespace', self.k8s_namespace)
+
+            if not deployment_name:
+                return False
+
+            # Load K8s config
+            try:
+                config.load_incluster_config()
+            except:
+                config.load_kube_config()
+
+            apps_v1 = client.AppsV1Api()
+
+            # Check deployment status
+            try:
+                deployment = apps_v1.read_namespaced_deployment(
+                    name=deployment_name,
+                    namespace=namespace
+                )
+
+                # Check if at least one replica is ready
+                return deployment.status.ready_replicas and deployment.status.ready_replicas > 0
+
+            except client.exceptions.ApiException:
+                # Deployment doesn't exist
+                return False
+
+        except Exception as e:
+            print(f"Error checking Kubernetes pod health: {e}")
+            return False
 
 
 # Singleton instance

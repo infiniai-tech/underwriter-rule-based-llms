@@ -72,20 +72,26 @@ class DroolsService(RuleService):
             return self.server_url, rulesetPath
 
         # Extract container ID from path
-        # Path format: /kie-server/services/rest/server/containers/{container_id}/...
+        # Path format: /containers/{container_id}/...
+        # or: /containers/instances/{container_id}
         parts = rulesetPath.split('/')
         try:
             containers_index = parts.index('containers')
             if containers_index + 1 < len(parts):
-                container_id = parts[containers_index + 1]
+                # Check if this is /containers/instances/{container_id} format
+                if parts[containers_index + 1] == 'instances' and containers_index + 2 < len(parts):
+                    container_id = parts[containers_index + 2]
+                else:
+                    container_id = parts[containers_index + 1]
 
                 # Look up container endpoint
                 endpoint = self.orchestrator.get_container_endpoint(container_id)
                 if endpoint:
-                    print(f"✓ Routing to container: {container_id} at {endpoint}")
+                    print(f"✓ Routing to DEDICATED container: {container_id} at {endpoint}")
                     return endpoint, rulesetPath
                 else:
-                    print(f"⚠ Container {container_id} not found in registry, using default URL")
+                    print(f"⚠ Container {container_id} not found or unhealthy in registry")
+                    print(f"⚠ FALLBACK: Using shared Drools server at {self.server_url}")
         except (ValueError, IndexError):
             print(f"⚠ Could not extract container ID from path: {rulesetPath}")
 
@@ -134,6 +140,11 @@ class DroolsService(RuleService):
                 {
                     "fire-all-rules": {
                         "max": -1
+                    }
+                },
+                {
+                    "get-objects": {
+                        "out-identifier": "all-facts"
                     }
                 }
             ]
@@ -235,6 +246,7 @@ class DroolsService(RuleService):
     def _extract_kie_batch_result(self, droolsResponse, originalInput):
         """
         Extract decision result from Drools KIE Server batch execution response
+        Looks for a Decision object inserted by rules, or returns modified input
         """
         try:
             # KIE Server response structure:
@@ -252,22 +264,59 @@ class DroolsService(RuleService):
                 exec_results = droolsResponse["result"].get("execution-results", {})
                 results = exec_results.get("results", [])
 
-                # Find the modified input object
+                decision_obj = None
+                input_obj = None
+                all_facts = []
+
+                # Extract all results
                 for result in results:
-                    if result.get("key") == "decision-input":
-                        return result.get("value", {})
+                    key = result.get("key", "")
+                    value = result.get("value", {})
 
-                # If no specific output, return all facts
-                if results:
-                    # Combine all returned objects
-                    combined = {}
-                    for result in results:
-                        if "value" in result:
-                            if isinstance(result["value"], dict):
-                                combined.update(result["value"])
-                    return combined if combined else originalInput
+                    if key == "decision-input":
+                        input_obj = value
+                    elif key == "all-facts":
+                        # This is a list of all objects in working memory
+                        all_facts = value if isinstance(value, list) else []
+                    elif isinstance(value, dict):
+                        # Check if this looks like a Decision object
+                        if "approved" in value or "decision" in value:
+                            decision_obj = value
 
-            # Fallback: return original input (rules may have modified it in place)
+                # Look for Decision object in all-facts list
+                if all_facts and not decision_obj:
+                    for fact in all_facts:
+                        if isinstance(fact, dict):
+                            # Check if this is a Decision object directly
+                            if "approved" in fact or "decision" in fact:
+                                decision_obj = fact
+                                break
+                            # Check if this is a wrapped Decision object (class name as key)
+                            for key, value in fact.items():
+                                if "Decision" in key and isinstance(value, dict):
+                                    if "approved" in value or "decision" in value:
+                                        decision_obj = value
+                                        break
+                            if decision_obj:
+                                break
+
+                # Build response: merge input with decision
+                if decision_obj:
+                    # Merge decision fields into the response
+                    response = originalInput.copy()
+                    response.update(decision_obj)
+                    print(f"✓ Found Decision object: {decision_obj}")
+                    return response
+                elif input_obj:
+                    # Return modified input
+                    print(f"✓ Returning modified input object")
+                    return input_obj
+                else:
+                    # Return original input
+                    print(f"⚠ No decision or modified input found, returning original")
+                    return originalInput
+
+            # Fallback: return original input
             return originalInput
 
         except Exception as e:

@@ -24,10 +24,14 @@ from ADSService import ADSService
 from DroolsService import DroolsService
 from UnderwritingWorkflow import UnderwritingWorkflow
 from RuleCacheService import get_rule_cache
+from DatabaseService import get_database_service
 import json,os
 from Utils import find_descriptors
 
 ROUTE="/rule-agent"
+
+# Initialize database service
+db_service = get_database_service()
 
 app = Flask(__name__)
 cors = CORS(app)
@@ -125,12 +129,22 @@ def process_policy_from_s3():
     """Process a policy PDF from S3 URL through the underwriting workflow"""
     data = request.get_json()
 
-    if not data or 's3_url' not in data:
+    if not data:
+        return jsonify({'error': 'JSON body is required'}), 400
+
+    # Validate required fields
+    if 's3_url' not in data:
         return jsonify({'error': 's3_url is required in JSON body'}), 400
 
+    if 'policy_type' not in data:
+        return jsonify({'error': 'policy_type is required in JSON body (e.g., "life_insurance", "auto", "property")'}), 400
+
+    if 'bank_id' not in data:
+        return jsonify({'error': 'bank_id is required in JSON body (e.g., "chase", "bofa", "wells-fargo")'}), 400
+
     s3_url = data['s3_url']
-    policy_type = data.get('policy_type', 'general')
-    bank_id = data.get('bank_id', None)  # Bank/tenant identifier
+    policy_type = data['policy_type']
+    bank_id = data['bank_id']
     use_cache = data.get('use_cache', True)  # Enable deterministic caching by default
 
     # Process through workflow with S3 URL
@@ -183,6 +197,14 @@ def drools_containers():
     from DroolsDeploymentService import DroolsDeploymentService
     deployment = DroolsDeploymentService()
     result = deployment.list_containers()
+    return jsonify(result)
+
+@app.route(ROUTE + '/orchestrated_containers', methods=['GET'])
+def orchestrated_containers():
+    """List orchestrated Docker/K8s containers with health status"""
+    from ContainerOrchestrator import get_orchestrator
+    orchestrator = get_orchestrator()
+    result = orchestrator.list_containers()
     return jsonify(result)
 
 @app.route(ROUTE + '/drools_container_status', methods=['GET'])
@@ -470,6 +492,364 @@ def get_cached_rules():
             "status": "error",
             "message": str(e)
         }), 500
+
+# ============================================================================
+# CUSTOMER-FACING API ENDPOINTS (Database-backed)
+# ============================================================================
+
+@app.route(ROUTE + '/api/v1/banks', methods=['GET'])
+def list_banks():
+    """List all available banks"""
+    try:
+        banks = db_service.list_banks(active_only=True)
+        return jsonify({
+            "status": "success",
+            "banks": [{
+                "bank_id": bank['bank_id'],
+                "bank_name": bank['bank_name'],
+                "description": bank['description']
+            } for bank in banks]
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route(ROUTE + '/api/v1/banks/<bank_id>/policies', methods=['GET'])
+def list_bank_policies(bank_id):
+    """List all available policy types for a specific bank"""
+    try:
+        # Get active containers for this bank
+        containers = db_service.list_containers(bank_id=bank_id, active_only=True)
+
+        # Get unique policy type IDs
+        policy_type_ids = list(set([c['policy_type_id'] for c in containers]))
+
+        # Get all policy types and filter by the ones available for this bank
+        all_policy_types = db_service.list_policy_types(active_only=True)
+
+        # Filter to only include policy types that have containers for this bank
+        policies = [
+            {
+                "policy_type_id": pt['policy_type_id'],
+                "policy_name": pt['policy_name'],
+                "description": pt['description'],
+                "category": pt['category']
+            }
+            for pt in all_policy_types
+            if pt['policy_type_id'] in policy_type_ids
+        ]
+
+        return jsonify({
+            "status": "success",
+            "bank_id": bank_id,
+            "policies": policies
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route(ROUTE + '/api/v1/policies', methods=['GET'])
+def query_policies():
+    """Query for available policy containers"""
+    try:
+        bank_id = request.args.get('bank_id')
+        policy_type = request.args.get('policy_type')
+
+        if not bank_id or not policy_type:
+            return jsonify({
+                "error": "Both bank_id and policy_type query parameters are required"
+            }), 400
+
+        # Get active container for this bank+policy combination
+        container = db_service.get_active_container(bank_id, policy_type)
+
+        if not container:
+            return jsonify({
+                "status": "not_found",
+                "message": f"No active container found for bank '{bank_id}' and policy type '{policy_type}'"
+            }), 404
+
+        return jsonify({
+            "status": "success",
+            "container": {
+                "container_id": container['container_id'],
+                "bank_id": container['bank_id'],
+                "policy_type_id": container['policy_type_id'],
+                "endpoint": container['endpoint'],
+                "status": container['status'],
+                "health_status": container['health_status'],
+                "deployed_at": container['deployed_at']
+            }
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route(ROUTE + '/api/v1/evaluate-policy', methods=['POST'])
+def evaluate_policy():
+    """
+    Evaluate a policy application using deployed rule engine
+
+    This is the main customer-facing endpoint for evaluating applications
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'JSON body is required'}), 400
+
+        # Validate required fields
+        if 'bank_id' not in data:
+            return jsonify({'error': 'bank_id is required'}), 400
+
+        if 'policy_type' not in data:
+            return jsonify({'error': 'policy_type is required'}), 400
+
+        if 'applicant' not in data:
+            return jsonify({'error': 'applicant data is required'}), 400
+
+        bank_id = data['bank_id']
+        policy_type = data['policy_type']
+        applicant = data['applicant']
+        policy_data = data.get('policy', {})
+
+        # Get the active container for this bank+policy
+        container = db_service.get_active_container(bank_id, policy_type)
+
+        if not container:
+            return jsonify({
+                "status": "error",
+                "message": f"No active rules deployed for bank '{bank_id}' and policy type '{policy_type}'. Please deploy rules first."
+            }), 404
+
+        print(f"DEBUG: Container retrieved from DB - ID: {container['container_id']}, Status: {container['status']}, Health: {container['health_status']}")
+
+        # If container appears unhealthy, try to get fresh endpoint (which triggers health check)
+        if container['status'] != 'running' or container['health_status'] != 'healthy':
+            print(f"DEBUG: Container appears unhealthy, running fresh health check via orchestrator...")
+            from ContainerOrchestrator import ContainerOrchestrator
+            orchestrator = ContainerOrchestrator()
+            fresh_endpoint = orchestrator.get_container_endpoint(container['container_id'])
+
+            if fresh_endpoint:
+                print(f"DEBUG: Health check PASSED! Endpoint: {fresh_endpoint}")
+                # Refresh container data from database after health check
+                container = db_service.get_active_container(bank_id, policy_type)
+                print(f"DEBUG: Refreshed container - Status: {container['status']}, Health: {container['health_status']}")
+            else:
+                print(f"DEBUG: Health check FAILED - container not responsive")
+                return jsonify({
+                    "status": "error",
+                    "message": f"Rule container is not healthy. Status: {container['status']}, Health: {container['health_status']}"
+                }), 503
+
+        # Prepare request for Drools
+        container_path = f"/kie-server/services/rest/server/containers/instances/{container['container_id']}"
+
+        # Build the payload for Drools
+        request_payload = {
+            "applicant": applicant,
+            "policy": policy_data
+        }
+
+        import time
+        start_time = time.time()
+
+        # Invoke the rule engine
+        try:
+            decision = droolsService.invokeDecisionService(container_path, request_payload)
+            execution_time = int((time.time() - start_time) * 1000)  # ms
+
+            # Log the request to database for analytics
+            db_service.log_request({
+                'container_id': container['id'],
+                'bank_id': bank_id,
+                'policy_type_id': policy_type,
+                'endpoint': container_path,
+                'http_method': 'POST',
+                'request_payload': request_payload,
+                'response_payload': decision,
+                'execution_time_ms': execution_time,
+                'status': 'success',
+                'status_code': 200
+            })
+
+            return jsonify({
+                "status": "success",
+                "bank_id": bank_id,
+                "policy_type": policy_type,
+                "container_id": container['container_id'],
+                "decision": decision,
+                "execution_time_ms": execution_time
+            })
+
+        except Exception as rule_error:
+            execution_time = int((time.time() - start_time) * 1000)
+
+            # Log the error
+            db_service.log_request({
+                'container_id': container['id'],
+                'bank_id': bank_id,
+                'policy_type_id': policy_type,
+                'endpoint': container_path,
+                'http_method': 'POST',
+                'request_payload': request_payload,
+                'execution_time_ms': execution_time,
+                'status': 'error',
+                'status_code': 500,
+                'error_message': str(rule_error)
+            })
+
+            return jsonify({
+                "status": "error",
+                "message": f"Error executing rules: {str(rule_error)}"
+            }), 500
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route(ROUTE + '/api/v1/deployments', methods=['GET'])
+def list_deployments():
+    """List all rule deployments (admin endpoint)"""
+    try:
+        bank_id = request.args.get('bank_id')
+        policy_type = request.args.get('policy_type')
+        status = request.args.get('status')
+        active_only = request.args.get('active_only', 'false').lower() == 'true'
+
+        containers = db_service.list_containers(
+            bank_id=bank_id,
+            policy_type_id=policy_type,
+            status=status,
+            active_only=active_only
+        )
+
+        return jsonify({
+            "status": "success",
+            "total": len(containers),
+            "deployments": [{
+                "id": c['id'],
+                "container_id": c['container_id'],
+                "bank_id": c['bank_id'],
+                "policy_type_id": c['policy_type_id'],
+                "endpoint": c['endpoint'],
+                "status": c['status'],
+                "health_status": c['health_status'],
+                "platform": c['platform'],
+                "version": c['version'],
+                "is_active": c['is_active'],
+                "deployed_at": c['deployed_at'],
+                "s3_jar_url": c['s3_jar_url'],
+                "s3_drl_url": c['s3_drl_url'],
+                "s3_excel_url": c['s3_excel_url']
+            } for c in containers]
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route(ROUTE + '/api/v1/deployments/<int:deployment_id>', methods=['GET'])
+def get_deployment(deployment_id):
+    """Get details of a specific deployment"""
+    try:
+        container = db_service.get_container_by_db_id(deployment_id)
+
+        if not container:
+            return jsonify({
+                "status": "not_found",
+                "message": f"Deployment {deployment_id} not found"
+            }), 404
+
+        # Get statistics
+        stats = db_service.get_container_stats(container['container_id'])
+
+        return jsonify({
+            "status": "success",
+            "deployment": {
+                "id": container['id'],
+                "container_id": container['container_id'],
+                "bank_id": container['bank_id'],
+                "policy_type_id": container['policy_type_id'],
+                "endpoint": container['endpoint'],
+                "status": container['status'],
+                "health_status": container['health_status'],
+                "platform": container['platform'],
+                "port": container['port'],
+                "version": container['version'],
+                "is_active": container['is_active'],
+                "deployed_at": container['deployed_at'],
+                "document_hash": container['document_hash'],
+                "s3_policy_url": container['s3_policy_url'],
+                "s3_jar_url": container['s3_jar_url'],
+                "s3_drl_url": container['s3_drl_url'],
+                "s3_excel_url": container['s3_excel_url']
+            },
+            "statistics": stats
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route(ROUTE + '/api/v1/discovery', methods=['GET'])
+def service_discovery():
+    """Service discovery endpoint - list all banks with their available policies"""
+    try:
+        result = db_service.get_banks_with_policies()
+        return jsonify({
+            "status": "success",
+            "services": result
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route(ROUTE + '/api/v1/extracted-rules', methods=['GET'])
+def get_extracted_rules():
+    """Get extracted rules for a specific bank and policy type"""
+    try:
+        bank_id = request.args.get('bank_id')
+        policy_type = request.args.get('policy_type')
+
+        if not bank_id or not policy_type:
+            return jsonify({
+                "status": "error",
+                "message": "Both bank_id and policy_type query parameters are required"
+            }), 400
+
+        # Fetch extracted rules from database
+        rules = db_service.get_extracted_rules(bank_id, policy_type, active_only=True)
+
+        return jsonify({
+            "status": "success",
+            "bank_id": bank_id,
+            "policy_type": policy_type,
+            "rule_count": len(rules),
+            "rules": rules
+        })
+    except Exception as e:
+        logger.error(f"Error fetching extracted rules: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route(ROUTE + '/api/v1/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    try:
+        db_healthy = db_service.health_check()
+        drools_healthy = droolsService.isConnected
+
+        return jsonify({
+            "status": "healthy" if (db_healthy and drools_healthy) else "unhealthy",
+            "database": "connected" if db_healthy else "disconnected",
+            "drools": "connected" if drools_healthy else "disconnected"
+        }), 200 if (db_healthy and drools_healthy) else 503
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e)
+        }), 503
+
 
 # Swagger documentation endpoints
 @app.route(ROUTE + '/swagger.yaml', methods=['GET'])

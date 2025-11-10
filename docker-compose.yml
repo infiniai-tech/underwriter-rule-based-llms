@@ -2,6 +2,29 @@
 # Includes: Drools + Backend API (ODM optional - commented out)
 
 services:
+  # PostgreSQL Database for rule container registry
+  postgres:
+    image: postgres:15-alpine
+    hostname: postgres
+    container_name: postgres
+    environment:
+      - POSTGRES_DB=underwriting_db
+      - POSTGRES_USER=underwriting_user
+      - POSTGRES_PASSWORD=underwriting_pass
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./rule-agent/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U underwriting_user -d underwriting_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    ports:
+      - 5432:5432
+    networks:
+      - underwriting-net
+
   # Drools KIE Server for underwriting rules
   drools:
     image: quay.io/kiegroup/kie-server-showcase:latest
@@ -41,6 +64,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock  # Docker-in-Docker for container orchestration
     build: rule-agent
     depends_on:
+      postgres:
+        condition: service_healthy
       drools:
         condition: service_healthy
     environment:
@@ -62,6 +87,14 @@ services:
       - USE_CONTAINER_ORCHESTRATOR=true  # Enabled for development and production
       - ORCHESTRATION_PLATFORM=docker
       - DOCKER_NETWORK=underwriting-net
+
+      # PostgreSQL Database Configuration
+      - DATABASE_URL=postgresql://underwriting_user:underwriting_pass@postgres:5432/underwriting_db
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=underwriting_db
+      - DB_USER=underwriting_user
+      - DB_PASSWORD=underwriting_pass
     env_file:
       - "llm.env"  # All Drools, AWS, and LLM config loaded from here
     ports:
@@ -97,3 +130,4 @@ volumes:
   generated_rules:
   maven-repository:
   rule-cache:  # Persistent cache for deterministic rule generation
+  postgres-data:  # PostgreSQL persistent storage
