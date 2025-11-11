@@ -126,28 +126,51 @@ class DroolsService(RuleService):
             'Accept': 'application/json'
         }
 
+        # Build commands to insert each fact separately with proper type
+        commands = []
+
+        # Insert applicant if present
+        if 'applicant' in decisionInputs:
+            commands.append({
+                "insert": {
+                    "object": {
+                        "com.underwriting.rules.Applicant": decisionInputs['applicant']
+                    },
+                    "out-identifier": "applicant",
+                    "return-object": True
+                }
+            })
+
+        # Insert policy if present
+        if 'policy' in decisionInputs:
+            commands.append({
+                "insert": {
+                    "object": {
+                        "com.underwriting.rules.Policy": decisionInputs['policy']
+                    },
+                    "out-identifier": "policy",
+                    "return-object": True
+                }
+            })
+
+        # Fire all rules
+        commands.append({
+            "fire-all-rules": {
+                "max": -1
+            }
+        })
+
+        # Get all facts
+        commands.append({
+            "get-objects": {
+                "out-identifier": "all-facts"
+            }
+        })
+
         # Drools KIE Server batch command format
         payload = {
             "lookup": None,
-            "commands": [
-                {
-                    "insert": {
-                        "object": decisionInputs,
-                        "out-identifier": "decision-input",
-                        "return-object": True
-                    }
-                },
-                {
-                    "fire-all-rules": {
-                        "max": -1
-                    }
-                },
-                {
-                    "get-objects": {
-                        "out-identifier": "all-facts"
-                    }
-                }
-            ]
+            "commands": commands
         }
 
         try:
@@ -155,6 +178,8 @@ class DroolsService(RuleService):
             base_url, path = self._resolve_container_endpoint(rulesetPath)
             url = base_url + path
             print(f"Invoking Drools (KIE Batch) at: {url}")
+            import json
+            print(f"DEBUG - Payload: {json.dumps(payload, indent=2)}")
 
             response = requests.post(
                 url,
@@ -165,6 +190,7 @@ class DroolsService(RuleService):
 
             if response.status_code == 200:
                 result = response.json()
+                print(f"DEBUG - Response facts: {result.get('result', {}).get('execution-results', {}).get('results', [])[:2]}")
                 return self._extract_kie_batch_result(result, decisionInputs)
             else:
                 print(f"Drools request error, status: {response.status_code}, response: {response.text}")

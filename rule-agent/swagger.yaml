@@ -28,14 +28,10 @@ servers:
     description: Local development server
 
 tags:
-  - name: Customer API
-    description: Customer-facing endpoints for service discovery and policy evaluation
-  - name: Admin - Workflow
-    description: Policy document processing and rule generation (Admin only)
-  - name: Admin - Deployments
-    description: Deployment management and monitoring (Admin only)
-  - name: System
-    description: System health and utilities
+  - name: Underwriting Workflow
+    description: Policy document processing and rule generation
+  - name: File Management
+    description: File upload and storage operations
 
 paths:
   # ============================================================================
@@ -196,49 +192,66 @@ paths:
                   example: insurance
                 applicant:
                   type: object
-                  description: Applicant data
+                  description: Applicant data (field names must match DRL declarations)
                   example:
                     age: 35
-                    income: 75000
-                    credit_score: 720
-                    employment_status: employed
+                    annualIncome: 75000
+                    creditScore: 720
+                    healthConditions: good
+                    smoker: false
                 policy:
                   type: object
-                  description: Policy-specific data (optional)
+                  description: Policy-specific data (optional, field names must match DRL)
                   example:
-                    coverage_amount: 500000
-                    term_years: 20
+                    coverageAmount: 500000
+                    termYears: 20
+                    type: term_life
             examples:
               insurance-application:
-                summary: Insurance Application
+                summary: Insurance Application (Approved)
                 value:
                   bank_id: chase
                   policy_type: insurance
                   applicant:
                     age: 35
-                    income: 75000
-                    credit_score: 720
-                    health_status: good
+                    annualIncome: 75000
+                    creditScore: 720
+                    healthConditions: good
                     smoker: false
                   policy:
-                    coverage_amount: 500000
-                    term_years: 20
+                    coverageAmount: 500000
+                    termYears: 20
                     type: term_life
-              loan-application:
-                summary: Loan Application
+              insurance-application-rejected-age:
+                summary: Insurance Application (Rejected - Age)
                 value:
                   bank_id: chase
-                  policy_type: loan
+                  policy_type: insurance
                   applicant:
-                    age: 42
-                    income: 95000
-                    credit_score: 750
-                    employment_years: 10
-                    debt_to_income_ratio: 0.35
+                    age: 70
+                    annualIncome: 75000
+                    creditScore: 720
+                    healthConditions: good
+                    smoker: false
                   policy:
-                    loan_amount: 250000
-                    loan_term_years: 15
-                    purpose: home_purchase
+                    coverageAmount: 500000
+                    termYears: 20
+                    type: term_life
+              insurance-application-rejected-credit:
+                summary: Insurance Application (Rejected - Credit Score)
+                value:
+                  bank_id: chase
+                  policy_type: insurance
+                  applicant:
+                    age: 35
+                    annualIncome: 75000
+                    creditScore: 550
+                    healthConditions: good
+                    smoker: false
+                  policy:
+                    coverageAmount: 500000
+                    termYears: 20
+                    type: term_life
       responses:
         '200':
           description: Decision returned successfully
@@ -293,6 +306,118 @@ paths:
                         total_containers:
                           type: integer
 
+  /api/v1/extracted-rules:
+    get:
+      tags:
+        - Customer API
+      summary: Get extracted policy rules
+      description: |
+        Retrieve extracted underwriting rules for a specific bank and policy type.
+
+        **Use Case:**
+        Frontend applications can display the actual underwriting rules to customers
+        so they understand what criteria will be evaluated when they apply.
+
+        **Features:**
+        - Returns only active rules by default
+        - Rules are grouped by category (Age Requirements, Credit Score, etc.)
+        - Includes source document information
+        - Timestamped for version tracking
+      operationId: getExtractedRules
+      parameters:
+        - name: bank_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Bank identifier
+          example: chase
+        - name: policy_type
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Policy type identifier
+          example: insurance
+      responses:
+        '200':
+          description: List of extracted rules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  bank_id:
+                    type: string
+                    example: chase
+                  policy_type:
+                    type: string
+                    example: insurance
+                  rule_count:
+                    type: integer
+                    example: 29
+                  rules:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ExtractedRule'
+              examples:
+                insurance-rules:
+                  summary: Insurance underwriting rules
+                  value:
+                    status: success
+                    bank_id: chase
+                    policy_type: insurance
+                    rule_count: 3
+                    rules:
+                      - id: 1
+                        rule_name: Minimum Age Requirement
+                        requirement: Applicant must be at least 18 years old (MANDATORY - Applications under 18 are AUTOMATICALLY REJECTED)
+                        category: Age Requirements
+                        source_document: sample_life_insurance_policy.txt
+                        document_hash: abc123def456
+                        extraction_timestamp: "2025-11-10T10:30:00"
+                        is_active: true
+                        created_at: "2025-11-10T10:30:00"
+                        updated_at: "2025-11-10T10:30:00"
+                      - id: 2
+                        rule_name: Minimum Credit Score
+                        requirement: Credit score must be at least 600 (MANDATORY - Applications under 600 are AUTOMATICALLY REJECTED)
+                        category: Credit Score Requirements
+                        source_document: sample_life_insurance_policy.txt
+                        document_hash: abc123def456
+                        extraction_timestamp: "2025-11-10T10:30:00"
+                        is_active: true
+                        created_at: "2025-11-10T10:30:00"
+                        updated_at: "2025-11-10T10:30:00"
+                      - id: 3
+                        rule_name: Minimum Annual Income
+                        requirement: Annual income must be at least $25,000
+                        category: Income Requirements
+                        source_document: sample_life_insurance_policy.txt
+                        document_hash: abc123def456
+                        extraction_timestamp: "2025-11-10T10:30:00"
+                        is_active: true
+                        created_at: "2025-11-10T10:30:00"
+                        updated_at: "2025-11-10T10:30:00"
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: Both bank_id and policy_type query parameters are required
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   # ============================================================================
   # ADMIN API - WORKFLOW
   # ============================================================================
@@ -310,9 +435,11 @@ paths:
         2. LLM analyzes and generates extraction queries
         3. AWS Textract extracts structured data
         4. LLM generates DRL rules
+        4.5. Transform rules to user-friendly text using OpenAI
         5. Deploy to Drools KIE Server
         6. Upload artifacts to S3
-        7. Register in PostgreSQL database
+        6.5. Register in PostgreSQL database
+        7. Save extracted rules with user-friendly descriptions
       operationId: processPolicyFromS3
       requestBody:
         required: true
@@ -335,9 +462,6 @@ paths:
                 bank_id:
                   type: string
                   example: chase
-                use_cache:
-                  type: boolean
-                  default: true
       responses:
         '200':
           description: Workflow completed
@@ -345,6 +469,187 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WorkflowResult'
+
+  /upload_file:
+      post:
+        tags:
+          - File Management
+        summary: Upload file to S3 bucket
+        description: |
+          Upload any file to AWS S3 bucket with organized folder structure.
+          
+          **Features:**
+          - Files are stored in organized folders: `{folder}/YYYY-MM-DD/filename_timestamp.ext`
+          - Automatic filename sanitization and timestamping to prevent overwrites
+          - Support for multiple file types (PDF, images, documents, etc.)
+          - File size validation (max 100 MB)
+          - Returns S3 URL for immediate access
+          
+          **Storage Structure:**
+          - Default folder: `uploads/`
+          - Date-based subfolders: `uploads/2025-11-07/`
+          - Timestamped filenames: `document_20251107_143022.pdf`
+          
+          **Security:**
+          - Filename sanitization prevents path traversal attacks
+          - Folder name validation
+          - Content type detection based on file extension
+        operationId: uploadFile
+        requestBody:
+          required: true
+          content:
+            multipart/form-data:
+              schema:
+                type: object
+                required:
+                  - file
+                properties:
+                  file:
+                    type: string
+                    format: binary
+                    description: File to upload (any file type supported)
+                  folder:
+                    type: string
+                    description: 'S3 folder name where file will be stored (default: "uploads")'
+                    example: uploads
+              encoding:
+                file:
+                  contentType: application/octet-stream
+        responses:
+          '200':
+            description: File uploaded successfully
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+                      example: success
+                    message:
+                      type: string
+                      example: File uploaded successfully to S3
+                    data:
+                      type: object
+                      properties:
+                        s3_url:
+                          type: string
+                          format: uri
+                          description: Full S3 URL to access the uploaded file
+                          example: https://uw-data-extraction.s3.us-east-1.amazonaws.com/uploads/2025-11-07/document_20251107_143022.pdf
+                        s3_key:
+                          type: string
+                          description: S3 key (path) of the uploaded file
+                          example: uploads/2025-11-07/document_20251107_143022.pdf
+                        bucket:
+                          type: string
+                          description: S3 bucket name
+                          example: uw-data-extraction
+                        filename:
+                          type: string
+                          description: Timestamped filename stored in S3
+                          example: document_20251107_143022.pdf
+                        original_filename:
+                          type: string
+                          description: Original filename provided by user
+                          example: document.pdf
+                        folder:
+                          type: string
+                          description: Folder where file is stored
+                          example: uploads
+                        file_size:
+                          type: integer
+                          description: File size in bytes
+                          example: 245760
+                        content_type:
+                          type: string
+                          description: MIME content type
+                          example: application/pdf
+                examples:
+                  pdf-upload:
+                    summary: PDF file upload
+                    value:
+                      status: success
+                      message: File uploaded successfully to S3
+                      data:
+                        s3_url: https://uw-data-extraction.s3.us-east-1.amazonaws.com/uploads/2025-11-07/policy_20251107_143022.pdf
+                        s3_key: uploads/2025-11-07/policy_20251107_143022.pdf
+                        bucket: uw-data-extraction
+                        filename: policy_20251107_143022.pdf
+                        original_filename: policy.pdf
+                        folder: uploads
+                        file_size: 245760
+                        content_type: application/pdf
+                  image-upload:
+                    summary: Image file upload
+                    value:
+                      status: success
+                      message: File uploaded successfully to S3
+                      data:
+                        s3_url: https://uw-data-extraction.s3.us-east-1.amazonaws.com/uploads/2025-11-07/image_20251107_143022.png
+                        s3_key: uploads/2025-11-07/image_20251107_143022.png
+                        bucket: uw-data-extraction
+                        filename: image_20251107_143022.png
+                        original_filename: screenshot.png
+                        folder: uploads
+                        file_size: 102400
+                        content_type: image/png
+          '400':
+            description: Bad request (missing file, invalid folder, file too large, etc.)
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+                      example: error
+                    message:
+                      type: string
+                      example: No file provided. Please include a file in the "file" field.
+                    error_code:
+                      type: string
+                      enum:
+                        - MISSING_FILE
+                        - EMPTY_FILENAME
+                        - EMPTY_FILE
+                        - FILE_TOO_LARGE
+                        - INVALID_FOLDER
+                      example: MISSING_FILE
+                examples:
+                  missing-file:
+                    summary: No file provided
+                    value:
+                      status: error
+                      message: 'No file provided. Please include a file in the "file" field.'
+                      error_code: MISSING_FILE
+                  file-too-large:
+                    summary: File exceeds size limit
+                    value:
+                      status: error
+                      message: 'File size (104857600 bytes) exceeds maximum allowed size (104857600 bytes)'
+                      error_code: FILE_TOO_LARGE
+                      file_size: 104857600
+                      max_size: 104857600
+          '500':
+            description: Internal server error (S3 upload failed, network error, etc.)
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+                      example: error
+                    message:
+                      type: string
+                      example: 'S3 upload failed: AccessDenied'
+                    error:
+                      type: string
+                      example: 'Access Denied'
+                    error_code:
+                      type: string
+                      example: AccessDenied
 
   # ============================================================================
   # ADMIN API - DEPLOYMENTS
@@ -569,6 +874,53 @@ components:
           type: string
         steps:
           type: object
+
+    ExtractedRule:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: Unique rule identifier
+          example: 1
+        rule_name:
+          type: string
+          description: Name or title of the rule
+          example: Minimum Age Requirement
+        requirement:
+          type: string
+          description: The actual requirement or rule text
+          example: Applicant must be at least 18 years old (MANDATORY - Applications under 18 are AUTOMATICALLY REJECTED)
+        category:
+          type: string
+          description: Category for grouping rules
+          example: Age Requirements
+        source_document:
+          type: string
+          description: Source document path or name from which the rule was extracted
+          example: sample_life_insurance_policy.txt
+        document_hash:
+          type: string
+          description: Hash of the source document for change detection
+          example: abc123def456
+        extraction_timestamp:
+          type: string
+          format: date-time
+          description: When the rule was extracted from the document
+          example: "2025-11-10T10:30:00"
+        is_active:
+          type: boolean
+          description: Whether this rule is currently active
+          example: true
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the record was created
+          example: "2025-11-10T10:30:00"
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp when the record was last updated
+          example: "2025-11-10T10:30:00"
 
     Error:
       type: object

@@ -326,6 +326,7 @@ Based on the updated [sample_life_insurance_policy.txt](sample_life_insurance_po
 ### Modified:
 - `rule-agent/DatabaseService.py` - Added ExtractedRule model and methods
 - `rule-agent/ChatService.py` - Added extracted-rules endpoint
+- `rule-agent/swagger.yaml` - Added API documentation for extracted-rules endpoint
 
 ## Support
 

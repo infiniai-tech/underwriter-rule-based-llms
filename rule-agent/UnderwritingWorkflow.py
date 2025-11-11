@@ -19,13 +19,14 @@ from RuleGeneratorAgent import RuleGeneratorAgent
 from DroolsDeploymentService import DroolsDeploymentService
 from S3Service import S3Service
 from ExcelRulesExporter import ExcelRulesExporter
-from RuleCacheService import get_rule_cache
 from DatabaseService import get_database_service
 from PyPDF2 import PdfReader
 import json
 import os
 import io
 from typing import Dict, List, Optional
+from langchain_openai import ChatOpenAI
+import hashlib
 
 class UnderwritingWorkflow:
     """
@@ -41,7 +42,6 @@ class UnderwritingWorkflow:
         self.drools_deployment = DroolsDeploymentService()
         self.s3_service = S3Service()
         self.excel_exporter = ExcelRulesExporter()
-        self.rule_cache = get_rule_cache()
         self.db_service = get_database_service()
 
         # Validate Textract is configured (required)
@@ -50,15 +50,13 @@ class UnderwritingWorkflow:
 
     def process_policy_document(self, s3_url: str,
                                 policy_type: str = "general",
-                                bank_id: str = None,
-                                use_cache: bool = True) -> Dict:
+                                bank_id: str = None) -> Dict:
         """
         Complete workflow to process a policy document and generate rules
 
         :param s3_url: S3 URL to policy PDF (required)
         :param policy_type: Type of policy (general, life, health, auto, property, loan, insurance, etc.)
         :param bank_id: Bank/Tenant identifier (e.g., 'chase', 'bofa', 'wells-fargo')
-        :param use_cache: Whether to use cached rules if available (default: True)
         :return: Result dictionary with all workflow steps
         """
 
@@ -121,31 +119,9 @@ class UnderwritingWorkflow:
             }
             print(f"✓ Extracted {len(document_text)} characters")
 
-            # Step 1.5: Check cache for deterministic rule generation
-            print("\n" + "="*60)
-            print("Step 1.5: Checking cache for identical policy document...")
-            print("="*60)
-
-            # Compute document hash (for deterministic caching)
-            document_hash = self.rule_cache.compute_document_hash(document_text)
+            # Compute document hash for version tracking
+            document_hash = hashlib.sha256(document_text.encode('utf-8')).hexdigest()
             result["document_hash"] = document_hash
-            print(f"Document hash: {document_hash[:16]}...")
-
-            # CACHING TEMPORARILY DISABLED FOR TESTING
-            # Check if we have cached rules for this exact document
-            # if use_cache:
-            #     cached_result = self.rule_cache.get_cached_rules(document_hash)
-            #     if cached_result:
-            #         print("✓ Found cached rules - using deterministic cached version")
-            #         # Return cached result with updated metadata
-            #         cached_data = cached_result.get("rule_data", {})
-            #         cached_data["status"] = "success"
-            #         cached_data["source"] = "cache"
-            #         cached_data["document_hash"] = document_hash
-            #         cached_data["cached_timestamp"] = cached_result.get("timestamp")
-            #         return cached_data
-
-            print("Cache disabled - proceeding with fresh rule generation...")
 
             # Step 2: LLM generates extraction queries by analyzing the document
             print("\n" + "="*60)
@@ -205,6 +181,43 @@ class UnderwritingWorkflow:
             print(f"✓ Generated DRL rules ({len(rules.get('drl', ''))} characters)")
             if rules.get('decision_table'):
                 print(f"✓ Generated decision table")
+
+            # Step 4.5: Save extracted rules to database (from DRL content)
+            if bank_id and policy_type and rules.get('drl'):
+                try:
+                    print("\n" + "="*60)
+                    print("Step 4.5: Parsing and saving rules from DRL to database...")
+                    print("="*60)
+
+                    # Parse DRL content to extract actual rules
+                    drl_content = rules.get('drl', '')
+                    rules_for_db = self._parse_drl_rules(drl_content)
+
+                    if rules_for_db:
+                        # Save to database
+                        saved_ids = self.db_service.save_extracted_rules(
+                            bank_id=bank_id,
+                            policy_type_id=policy_type,
+                            rules=rules_for_db,
+                            source_document=s3_key,
+                            document_hash=document_hash
+                        )
+
+                        print(f"✓ Saved {len(saved_ids)} Drools rules to database")
+                        result["steps"]["save_drools_rules"] = {
+                            "status": "success",
+                            "count": len(saved_ids),
+                            "rule_ids": saved_ids
+                        }
+                    else:
+                        print("⚠ No parseable rules found in DRL content")
+
+                except Exception as e:
+                    print(f"⚠ Failed to save Drools rules to database: {e}")
+                    result["steps"]["save_drools_rules"] = {
+                        "status": "error",
+                        "message": str(e)
+                    }
 
             # Step 5: Automated deployment to Drools KIE Server (includes DRL save)
             print("\n" + "="*60)
@@ -355,13 +368,6 @@ class UnderwritingWorkflow:
             result["status"] = "completed"
             result["source"] = "generated"
 
-            # Cache the successful result for future deterministic retrieval
-            print("\n" + "="*60)
-            print("Step 7: Caching rules for future deterministic generation...")
-            print("="*60)
-
-            self.rule_cache.cache_rules(document_hash, result)
-
             print("\n" + "="*60)
             print("✓ Workflow completed successfully!")
             print("="*60)
@@ -395,4 +401,250 @@ class UnderwritingWorkflow:
         except Exception as e:
             print(f"Error extracting text from S3 PDF: {e}")
             return f"Error: Could not extract text from S3 PDF - {str(e)}"
+
+    def _parse_drl_rules(self, drl_content: str) -> List[Dict[str, str]]:
+        """
+        Parse DRL content to extract individual rules with their conditions and actions
+        Returns list of rules in format suitable for database storage
+        """
+        import re
+
+        rules_list = []
+
+        try:
+            # Split DRL into individual rule blocks
+            # Pattern: rule "RuleName" ... when ... then ... end
+            rule_pattern = r'rule\s+"([^"]+)"[^w]*?when(.*?)then(.*?)end'
+            matches = re.finditer(rule_pattern, drl_content, re.DOTALL | re.IGNORECASE)
+
+            for idx, match in enumerate(matches, 1):
+                rule_name = match.group(1).strip()
+                when_clause = match.group(2).strip()
+                then_clause = match.group(3).strip()
+
+                # Clean up the clauses
+                when_clause = self._clean_drl_clause(when_clause)
+                then_clause = self._clean_drl_clause(then_clause)
+
+                # Determine category based on rule name or content
+                category = self._categorize_rule(rule_name, when_clause)
+
+                # Transform technical Drools rule into user-friendly text
+                user_friendly_requirement = self._transform_rule_to_user_friendly(
+                    rule_name, when_clause, then_clause
+                )
+
+                rules_list.append({
+                    "rule_name": rule_name,
+                    "requirement": user_friendly_requirement,
+                    "category": category,
+                    "source_document": "Generated from policy document"
+                })
+
+            # If no rules found with standard pattern, try to extract from decision table comments
+            if not rules_list:
+                print("⚠ No standard rules found, attempting to parse decision table...")
+                rules_list = self._parse_decision_table(drl_content)
+
+        except Exception as e:
+            print(f"Error parsing DRL rules: {e}")
+
+        return rules_list
+
+    def _clean_drl_clause(self, clause: str) -> str:
+        """Clean up DRL clause by removing extra whitespace and formatting"""
+        # Remove extra whitespace
+        clause = ' '.join(clause.split())
+        # Remove semicolons at the end
+        clause = clause.rstrip(';')
+        return clause
+
+    def _transform_rule_to_user_friendly(self, rule_name: str, when_clause: str, then_clause: str) -> str:
+        """
+        Transform technical Drools WHEN/THEN clauses into user-friendly requirement text
+        using OpenAI GPT
+        """
+        try:
+            # Get OpenAI API key from environment
+            openai_api_key = os.getenv('OPENAI_API_KEY')
+            if not openai_api_key:
+                print("⚠ OpenAI API key not configured, returning technical format")
+                return f"WHEN: {when_clause}\nTHEN: {then_clause}"
+
+            # Initialize OpenAI client
+            llm = ChatOpenAI(
+                model=os.getenv('OPENAI_MODEL_NAME', 'gpt-4'),
+                temperature=0.3,  # Lower temperature for consistent transformation
+                openai_api_key=openai_api_key
+            )
+
+            # Create prompt for transformation
+            prompt = f"""Transform the following technical Drools rule into a clear, user-friendly requirement statement.
+
+Rule Name: {rule_name}
+
+Technical Rule:
+WHEN: {when_clause}
+THEN: {then_clause}
+
+Instructions:
+1. Write a concise, natural language statement that explains what this rule checks
+2. Focus on the business requirement, not technical implementation
+3. Use simple language that a non-technical user can understand
+4. Include specific values and thresholds mentioned in the rule
+5. Format: Write as a single clear statement or short paragraph (maximum 2-3 sentences)
+6. Do NOT include technical terms like "Applicant", "$applicant", "Decision", etc.
+7. Use phrases like "must be", "should be", "required", etc.
+
+Example transformations:
+- Technical: "WHEN: $applicant : Applicant( age < 18 || age > 65 ) THEN: $decision.setApproved(false)"
+- User-friendly: "Applicant must be between 18 and 65 years old"
+
+- Technical: "WHEN: $applicant : Applicant( creditScore < 600 ) THEN: $decision.setApproved(false)"
+- User-friendly: "Minimum credit score of 600 is required"
+
+Now transform the rule above:"""
+
+            # Get response from OpenAI
+            response = llm.invoke(prompt)
+            user_friendly_text = response.content.strip()
+
+            # Validate response is not empty
+            if not user_friendly_text or len(user_friendly_text) < 10:
+                print(f"⚠ OpenAI returned short response for rule '{rule_name}', using fallback")
+                return self._fallback_transformation(rule_name, when_clause, then_clause)
+
+            return user_friendly_text
+
+        except Exception as e:
+            print(f"⚠ Error transforming rule '{rule_name}' with OpenAI: {e}")
+            return self._fallback_transformation(rule_name, when_clause, then_clause)
+
+    def _fallback_transformation(self, rule_name: str, when_clause: str, then_clause: str) -> str:
+        """
+        Fallback transformation using simple pattern matching when OpenAI is not available
+        """
+        import re
+
+        # Extract key information from WHEN clause
+        when_lower = when_clause.lower()
+
+        # Age rules
+        if 'age' in when_lower:
+            age_match = re.search(r'age\s*([<>=!]+)\s*(\d+)', when_lower)
+            if age_match:
+                operator = age_match.group(1)
+                value = age_match.group(2)
+                if '<' in operator:
+                    return f"Minimum age requirement of {value} years"
+                elif '>' in operator:
+                    return f"Maximum age limit of {value} years"
+
+        # Credit score rules
+        if 'credit' in when_lower:
+            credit_match = re.search(r'credit\w*\s*([<>=!]+)\s*(\d+)', when_lower)
+            if credit_match:
+                operator = credit_match.group(1)
+                value = credit_match.group(2)
+                if '<' in operator:
+                    return f"Minimum credit score of {value} is required"
+                elif '>' in operator:
+                    return f"Credit score must not exceed {value}"
+
+        # Income rules
+        if 'income' in when_lower:
+            income_match = re.search(r'income\s*([<>=!]+)\s*(\d+)', when_lower)
+            if income_match:
+                operator = income_match.group(1)
+                value = income_match.group(2)
+                if '<' in operator:
+                    return f"Minimum annual income of ${value:,} is required"
+                elif '>' in operator:
+                    return f"Annual income must not exceed ${value:,}"
+
+        # Coverage amount rules
+        if 'coverage' in when_lower:
+            coverage_match = re.search(r'coverage\w*\s*([<>=!]+)\s*(\d+)', when_lower)
+            if coverage_match:
+                operator = coverage_match.group(1)
+                value = coverage_match.group(2)
+                if '>' in operator:
+                    return f"Maximum coverage amount of ${int(value):,}"
+                elif '<' in operator:
+                    return f"Minimum coverage amount of ${int(value):,}"
+
+        # Health condition rules
+        if 'health' in when_lower and 'poor' in when_lower:
+            return "Applicants with poor health status are not eligible"
+
+        # Smoker rules
+        if 'smoker' in when_lower and 'true' in when_lower:
+            if 'premium' in then_clause.lower():
+                multiplier_match = re.search(r'(\d+\.?\d*)', then_clause)
+                if multiplier_match:
+                    multiplier = float(multiplier_match.group(1))
+                    increase_pct = int((multiplier - 1) * 100)
+                    return f"Smokers pay {increase_pct}% higher premiums"
+            return "Special premium rates apply for smokers"
+
+        # Default fallback - simplified technical format
+        return f"Rule: {rule_name}"
+
+    def _categorize_rule(self, rule_name: str, when_clause: str) -> str:
+        """Determine category based on rule name and conditions"""
+        rule_name_lower = rule_name.lower()
+        when_lower = when_clause.lower()
+
+        if 'age' in rule_name_lower or 'age' in when_lower:
+            return "Age Requirements"
+        elif 'credit' in rule_name_lower or 'credit' in when_lower:
+            return "Credit Score Requirements"
+        elif 'income' in rule_name_lower or 'income' in when_lower:
+            return "Income Requirements"
+        elif 'health' in rule_name_lower or 'health' in when_lower:
+            return "Health Requirements"
+        elif 'reject' in rule_name_lower or 'reject' in when_lower:
+            return "Automatic Rejection Criteria"
+        elif 'coverage' in rule_name_lower or 'coverage' in when_lower:
+            return "Coverage Requirements"
+        elif 'premium' in rule_name_lower or 'premium' in when_lower:
+            return "Premium Calculation"
+        elif 'tier' in rule_name_lower:
+            return "Coverage Tiers"
+        elif 'approval' in rule_name_lower or 'approve' in rule_name_lower:
+            return "Approval Rules"
+        else:
+            return "General Requirements"
+
+    def _parse_decision_table(self, drl_content: str) -> List[Dict[str, str]]:
+        """Parse decision table format rules from DRL"""
+        rules_list = []
+
+        try:
+            # Look for decision table comments or structure
+            lines = drl_content.split('\n')
+            current_rule = None
+
+            for line in lines:
+                line = line.strip()
+                # Skip empty lines and package/import statements
+                if not line or line.startswith('package') or line.startswith('import'):
+                    continue
+
+                # Look for rule definitions in decision table format
+                if line.startswith('//') or line.startswith('#'):
+                    # This might be a comment describing a rule
+                    comment = line.lstrip('/#').strip()
+                    if len(comment) > 10:  # Substantial comment
+                        rules_list.append({
+                            "rule_name": f"Rule {len(rules_list) + 1}",
+                            "requirement": comment,
+                            "category": "Policy Rules",
+                            "source_document": "Generated from policy document"
+                        })
+
+        except Exception as e:
+            print(f"Error parsing decision table: {e}")
+
+        return rules_list
 

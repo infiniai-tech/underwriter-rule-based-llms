@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import tempfile
 from datetime import datetime
+from JavaPojoGenerator import JavaPojoGenerator
 
 class DroolsDeploymentService:
     """
@@ -196,6 +197,15 @@ class DroolsDeploymentService:
     <build>
         <plugins>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.8.1</version>
+                <configuration>
+                    <source>1.8</source>
+                    <target>1.8</target>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.kie</groupId>
                 <artifactId>kie-maven-plugin</artifactId>
                 <version>7.74.1.Final</version>
@@ -223,7 +233,41 @@ class DroolsDeploymentService:
         with open(os.path.join(rules_dir, "underwriting-rules.drl"), 'w') as f:
             f.write(drl_content)
 
-        # 4. Create README with build instructions
+        # 4. Generate Java POJOs from DRL declare statements
+        print("Generating Java POJOs from DRL declarations...")
+        java_src_dir = os.path.join(src_main, "java")
+        os.makedirs(java_src_dir, exist_ok=True)
+
+        try:
+            pojo_generator = JavaPojoGenerator()
+            declares = pojo_generator.parse_drl_declares(drl_content)
+
+            if declares:
+                print(f"Found {len(declares)} declare statements, generating POJOs...")
+                for class_info in declares:
+                    package_name = class_info['package']
+                    class_name = class_info['name']
+
+                    # Create package directory
+                    package_path = os.path.join(java_src_dir, *package_name.split('.'))
+                    os.makedirs(package_path, exist_ok=True)
+
+                    # Generate Java code
+                    java_code = pojo_generator.generate_java_class(class_info)
+
+                    # Write to file
+                    java_file = os.path.join(package_path, f"{class_name}.java")
+                    with open(java_file, 'w') as f:
+                        f.write(java_code)
+
+                    print(f"  ✓ Generated {class_name}.java")
+            else:
+                print("  No declare statements found in DRL")
+        except Exception as e:
+            print(f"  ⚠ Warning: POJO generation failed: {e}")
+            print(f"  Continuing without POJOs (may cause field mapping issues)")
+
+        # 5. Create README with build instructions
         readme = f"""# Underwriting Rules KJar
 
 ## Build Instructions
@@ -563,6 +607,16 @@ Manual Deployment Steps:
                 result["status"] = "partial"
                 result["message"] = "KJar structure created but Maven build failed. Manual build required."
                 result["manual_instructions"] = f"Maven build failed - check build output for errors"
+
+                # Print detailed error information
+                print(f"✗ Maven build failed:")
+                if "error_output" in build_result:
+                    print(f"  STDERR: {build_result['error_output']}")
+                if "build_output" in build_result:
+                    print(f"  STDOUT (last 500 chars): {build_result['build_output'][-500:]}")
+                if "message" in build_result:
+                    print(f"  Message: {build_result['message']}")
+
                 return result
 
             # Copy JAR and DRL to a second temp location for S3 upload

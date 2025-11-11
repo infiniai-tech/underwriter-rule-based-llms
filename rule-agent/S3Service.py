@@ -343,3 +343,111 @@ class S3Service:
                 "status": "error",
                 "message": f"Error uploading Excel to S3: {str(e)}"
             }
+
+    def upload_file_to_s3(self, file_content: bytes, filename: str, folder: str = "uploads") -> Dict:
+        """
+        Upload any file to S3 in a specified folder
+        
+        :param file_content: File content as bytes
+        :param filename: Original filename
+        :param folder: S3 folder path (default: "uploads")
+        :return: Upload result with S3 URL and key
+        """
+        if not self.s3_client:
+            return {
+                "status": "error",
+                "message": "S3 client not initialized. Please check AWS credentials."
+            }
+
+        try:
+            # Sanitize filename to prevent path traversal
+            safe_filename = os.path.basename(filename).replace(' ', '_')
+            
+            # Create timestamp-based folder structure: folder/YYYY-MM-DD/filename
+            date_folder = datetime.now().strftime("%Y-%m-%d")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Add timestamp to filename to prevent overwrites
+            name, ext = os.path.splitext(safe_filename)
+            timestamped_filename = f"{name}_{timestamp}{ext}"
+            
+            # Construct S3 key: folder/YYYY-MM-DD/filename_timestamp.ext
+            s3_key = f"{folder}/{date_folder}/{timestamped_filename}"
+            
+            # Determine content type based on file extension
+            content_type = self._get_content_type(safe_filename)
+            
+            # Upload file to S3
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=s3_key,
+                Body=file_content,
+                ContentType=content_type,
+                Metadata={
+                    'original-filename': safe_filename,
+                    'upload-timestamp': timestamp,
+                    'upload-date': date_folder
+                }
+            )
+            
+            # Generate S3 URL
+            s3_url = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{s3_key}"
+            
+            file_size = len(file_content)
+            print(f"✓ Uploaded file to S3: {s3_key} ({file_size} bytes)")
+            
+            return {
+                "status": "success",
+                "message": f"File uploaded successfully to S3",
+                "s3_key": s3_key,
+                "s3_url": s3_url,
+                "bucket": self.bucket_name,
+                "filename": timestamped_filename,
+                "original_filename": safe_filename,
+                "folder": folder,
+                "file_size": file_size,
+                "content_type": content_type
+            }
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error'].get('Message', str(e))
+            return {
+                "status": "error",
+                "message": f"S3 upload failed: {error_code}",
+                "error": error_message,
+                "error_code": error_code
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Error uploading file to S3: {str(e)}",
+                "error": str(e)
+            }
+
+    def _get_content_type(self, filename: str) -> str:
+        """
+        Determine content type based on file extension
+        
+        :param filename: Filename with extension
+        :return: MIME content type
+        """
+        ext = os.path.splitext(filename)[1].lower()
+        content_types = {
+            '.pdf': 'application/pdf',
+            '.txt': 'text/plain',
+            '.doc': 'application/msword',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.xls': 'application/vnd.ms-excel',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            '.json': 'application/json',
+            '.xml': 'application/xml',
+            '.csv': 'text/csv',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.zip': 'application/zip',
+            '.jar': 'application/java-archive',
+            '.drl': 'text/plain'
+        }
+        return content_types.get(ext, 'application/octet-stream')
