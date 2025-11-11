@@ -290,6 +290,7 @@ class ContainerOrchestrator:
                 volumes={
                     volume_name: {'bind': '/opt/jboss/.m2/repository', 'mode': 'rw'}
                 },
+                restart_policy={"Name": "unless-stopped"},  # Auto-restart container unless manually stopped
                 healthcheck={
                     'test': ['CMD', 'curl', '-f', '-u', 'kieserver:kieserver1!',
                             'http://localhost:8080/kie-server/services/rest/server'],
