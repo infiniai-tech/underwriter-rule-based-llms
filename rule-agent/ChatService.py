@@ -38,7 +38,16 @@ db_service = get_database_service()
 app = Flask(__name__)
 
 # Configure CORS to allow all origins with all necessary headers and methods
+# Apply to all routes including /rule-agent/* paths
 cors = CORS(app, resources={
+    r"/rule-agent/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+        "expose_headers": ["Content-Type", "X-Total-Count"],
+        "supports_credentials": False,
+        "max_age": 3600
+    },
     r"/*": {
         "origins": "*",
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -49,6 +58,16 @@ cors = CORS(app, resources={
     }
 })
 app.config['CORS_HEADERS'] = 'Content-Type'
+
+# Add after_request handler to ensure CORS headers on all responses
+@app.after_request
+def after_request(response):
+    """Add CORS headers to every response"""
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
+    response.headers.add('Access-Control-Max-Age', '3600')
+    return response
 
 # create a LLM service
 llm = createLLM()
@@ -606,6 +625,14 @@ def evaluate_policy():
 
     This is the main customer-facing endpoint for evaluating applications
     """
+    # Handle OPTIONS preflight request
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept')
+        response.headers.add('Access-Control-Allow-Methods', 'POST,OPTIONS')
+        return response, 200
+
     try:
         data = request.get_json()
 
