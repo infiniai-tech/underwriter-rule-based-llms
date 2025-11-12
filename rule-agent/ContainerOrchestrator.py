@@ -593,11 +593,28 @@ class ContainerOrchestrator:
         return port
 
     def _check_existing_docker_container(self, client, container_name: str) -> bool:
-        """Check if Docker container already exists"""
+        """
+        Check if Docker container already exists and is running.
+        If container exists but is not running (created/exited), remove it.
+        """
         try:
             container = client.containers.get(container_name)
-            return True
-        except:
+            status = container.status
+
+            # If container is running or healthy, return True
+            if status in ['running', 'healthy']:
+                return True
+
+            # If container exists but is not running (created, exited, paused, etc.)
+            # Remove it so we can create a fresh one
+            print(f"⚠ Container {container_name} exists but is not running (status: {status})")
+            print(f"  Removing container to create a fresh one...")
+            container.remove(force=True)
+            print(f"✓ Removed container {container_name}")
+            return False
+
+        except Exception as e:
+            # Container doesn't exist
             return False
 
     def _check_existing_k8s_deployment(self, apps_v1, deployment_name: str) -> bool:

@@ -376,27 +376,43 @@ class DatabaseService:
 
     # Container operations
     def register_container(self, container_data: Dict[str, Any]) -> RuleContainer:
-        """Register a new rule container"""
+        """Register a new rule container (UPSERT pattern)"""
         with self.get_session() as session:
             # Ensure bank and policy type exist
             bank_id = container_data.get('bank_id')
             policy_type_id = container_data.get('policy_type_id')
+            container_id = container_data.get('container_id')
 
-            # Deactivate old containers for this bank+policy combination
-            old_containers = session.query(RuleContainer).filter_by(
-                bank_id=bank_id,
-                policy_type_id=policy_type_id,
-                is_active=True
-            ).all()
+            # Check if container with this ID already exists
+            existing_container = session.query(RuleContainer).filter_by(
+                container_id=container_id
+            ).first()
 
-            for old_container in old_containers:
-                old_container.is_active = False
-                old_container.status = 'stopped'
-                old_container.stopped_at = datetime.utcnow()
+            if existing_container:
+                # UPDATE existing container
+                logger.info(f"Updating existing container {container_id} for {bank_id}/{policy_type_id}")
+                for key, value in container_data.items():
+                    setattr(existing_container, key, value)
+                existing_container.updated_at = datetime.utcnow()
+                container = existing_container
+            else:
+                # Deactivate old containers for this bank+policy combination
+                old_containers = session.query(RuleContainer).filter_by(
+                    bank_id=bank_id,
+                    policy_type_id=policy_type_id,
+                    is_active=True
+                ).all()
 
-            # Create new container
-            container = RuleContainer(**container_data)
-            session.add(container)
+                for old_container in old_containers:
+                    old_container.is_active = False
+                    old_container.status = 'stopped'
+                    old_container.stopped_at = datetime.utcnow()
+
+                # INSERT new container
+                logger.info(f"Creating new container {container_id} for {bank_id}/{policy_type_id}")
+                container = RuleContainer(**container_data)
+                session.add(container)
+
             session.commit()
             session.refresh(container)
 
@@ -595,6 +611,7 @@ class DatabaseService:
                         rule_name=rule_data.get('rule_name', rule_data.get('Rule', 'Unknown Rule')),
                         requirement=rule_data.get('requirement', rule_data.get('Requirement', '')),
                         category=rule_data.get('category', rule_data.get('Category', 'General')),
+                        level=rule_data.get('level'),  # Include hierarchical level (1, 2, 3, or None)
                         source_document=source_document or rule_data.get('source_document', rule_data.get('Source Document', '')),
                         document_hash=document_hash,
                         is_active=True

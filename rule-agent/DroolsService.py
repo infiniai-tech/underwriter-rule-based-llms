@@ -85,12 +85,23 @@ class DroolsService(RuleService):
                     container_id = parts[containers_index + 1]
 
                 # Look up container endpoint
-                endpoint = self.orchestrator.get_container_endpoint(container_id)
+                # For hierarchical containers (e.g., chase-insurance-rules-level1),
+                # strip the -level[1-3] suffix to find the base container
+                base_container_id = container_id
+                import re
+                if re.match(r'.*-level[123]$', container_id):
+                    base_container_id = re.sub(r'-level[123]$', '', container_id)
+                    print(f"DEBUG: Hierarchical container detected: {container_id} -> base: {base_container_id}")
+
+                endpoint = self.orchestrator.get_container_endpoint(base_container_id)
                 if endpoint:
-                    print(f"✓ Routing to DEDICATED container: {container_id} at {endpoint}")
+                    print(f"✓ Routing to DEDICATED container: {base_container_id} at {endpoint}")
+                    # endpoint is just the base URL: http://host:port
+                    # rulesetPath is the full path: /kie-server/services/rest/server/containers/...
+                    # No modification needed - just return them as-is
                     return endpoint, rulesetPath
                 else:
-                    print(f"⚠ Container {container_id} not found or unhealthy in registry")
+                    print(f"⚠ Container {base_container_id} not found or unhealthy in registry")
                     print(f"⚠ FALLBACK: Using shared Drools server at {self.server_url}")
         except (ValueError, IndexError):
             print(f"⚠ Could not extract container ID from path: {rulesetPath}")

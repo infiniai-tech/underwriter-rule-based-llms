@@ -66,7 +66,92 @@ Add DRL validation that checks:
 
 ---
 
-## Issue 2: Container Already Exists Error
+## Issue 2: Docker Port Already Allocated
+
+**Symptom:**
+```
+Bind for 0.0.0.0:8084 failed: port is already allocated
+Container drools-chase-insurance-underwriting-rules is not running (status: created)
+✗ FAILED: All deployments failed
+```
+
+**Root Cause:**
+The port (e.g., 8084) is already in use by another Drools container. The orchestrator assigns ports sequentially starting from 8080.
+
+**Solution 1: Remove Old Container**
+```bash
+# List all Drools containers
+docker ps -a | grep drools
+
+# Stop and remove the container using that port
+docker rm -f drools-chase-loan-underwriting-rules
+
+# Or remove all stopped Drools containers
+docker ps -a | grep drools | grep -v 'drools-' | awk '{print $1}' | xargs docker rm -f
+```
+
+**Solution 2: Check Port Usage**
+```bash
+# See which containers are using which ports
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+
+# Find which container is using port 8084
+docker ps | grep 8084
+```
+
+**Solution 3: Clean Up All Dedicated Containers**
+If you want to start fresh:
+```bash
+# Stop all dedicated Drools containers (keeps main drools container)
+docker ps | grep 'drools-' | grep -v '^drools\s' | awk '{print $1}' | xargs docker stop
+docker ps -a | grep 'drools-' | grep -v '^drools\s' | awk '{print $1}' | xargs docker rm
+```
+
+**Prevention:**
+- Before deploying, check if the container already exists
+- Use unique `bank_id` + `policy_type` combinations
+- The system will try to reuse existing containers, but port conflicts can occur if containers are stopped but not removed
+
+---
+
+## Issue 2B: Container in "created" Status (Not Running)
+
+**Symptom:**
+```
+ℹ Docker container already exists: chase-insurance-underwriting-rules
+✗ Failed to deploy: Container drools-chase-insurance-underwriting-rules is not running (status: created)
+```
+
+**Root Cause:**
+The Docker container was created in a previous deployment but never started successfully. It exists in "created" state instead of "running" state.
+
+**Solution 1: Manual Cleanup (Immediate fix)**
+```bash
+# Remove the orphaned container
+docker rm -f drools-chase-insurance-underwriting-rules
+
+# Retry deployment
+```
+
+**Solution 2: Automatic Cleanup (✅ FIXED in latest code)**
+
+The system now automatically detects and removes containers in "created" or "exited" status:
+
+1. **Update your code** to get the latest fix in `ContainerOrchestrator.py`
+2. **Restart backend**:
+   ```bash
+   docker-compose restart backend
+   ```
+3. **Retry deployment** - the system will auto-remove orphaned containers
+
+**What the fix does:**
+- Checks container status when detecting existing containers
+- If status is not "running" or "healthy", automatically removes the container
+- Creates a fresh container that starts properly
+
+---
+
+## Issue 3: Container Already Exists Error
 
 **Symptom:**
 ```
@@ -78,7 +163,66 @@ The deployment automatically disposes and redeploys. If you see this, it's worki
 
 ---
 
-## Issue 3: Database Migration Not Applied
+## Issue 4: OpenAI API Quota Exceeded
+
+**Symptom:**
+```
+⚠ Error transforming rule with OpenAI: Error code: 429
+{'error': {'message': 'You exceeded your current quota...', 'type': 'insufficient_quota'}}
+```
+
+**Impact:**
+- **Low Impact**: Rules still get saved to database
+- **Missing Feature**: Rules won't have user-friendly descriptions
+- **Workaround**: The raw DRL rule text is still available
+
+**Root Cause:**
+The system uses OpenAI API to transform technical DRL rules into user-friendly descriptions. Your OpenAI API key has exceeded its quota.
+
+**Solutions:**
+
+1. **Add OpenAI Credits** (Recommended if you need user-friendly descriptions)
+   - Go to https://platform.openai.com/account/billing
+   - Add credits to your account
+   - Retry the workflow
+
+2. **Disable Rule Transformation** (Temporary workaround)
+   - Edit environment variables to skip OpenAI transformation
+   - Rules will still work, just without friendly descriptions
+
+3. **Use Alternative LLM** (Future enhancement)
+   - The system could be modified to use Watsonx or local LLM instead
+   - Currently only supports OpenAI for rule transformation
+
+**What Still Works:**
+- ✅ Rule extraction from PDFs
+- ✅ DRL rule generation
+- ✅ Drools deployment
+- ✅ Rule evaluation
+- ✅ Database storage
+- ❌ User-friendly rule descriptions (missing)
+
+**Example Impact:**
+
+Without transformation:
+```json
+{
+  "rule_name": "L1: Age Requirement Check",
+  "requirement": "when\n  $applicant : Applicant( age < 18 || age > 65 )\n  $decision : Decision()\nthen..."
+}
+```
+
+With transformation (when quota available):
+```json
+{
+  "rule_name": "L1: Age Requirement Check",
+  "requirement": "Applicant must be between 18 and 65 years old to qualify for this policy"
+}
+```
+
+---
+
+## Issue 5: Database Migration Not Applied
 
 **Symptom:**
 - `level` column doesn't exist in `extracted_rules` table
