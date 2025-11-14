@@ -97,6 +97,79 @@ class UnderwritingWorkflow:
         }
 
         try:
+            # Step 0.1: Ensure bank exists in database (auto-create if missing)
+            if bank_id:
+                try:
+                    print("\n" + "="*60)
+                    print("Step 0.1: Ensuring bank exists in database...")
+                    print("="*60)
+
+                    existing_bank = self.db_service.get_bank(normalized_bank)
+                    if not existing_bank:
+                        # Auto-create bank with normalized ID
+                        bank_name = normalized_bank.replace('-', ' ').title()
+                        self.db_service.create_bank(
+                            bank_id=normalized_bank,
+                            bank_name=bank_name,
+                            description=f"Auto-created bank: {bank_name}"
+                        )
+                        print(f"✓ Created bank: {normalized_bank} ({bank_name})")
+                        result["steps"]["bank_creation"] = {
+                            "status": "created",
+                            "bank_id": normalized_bank,
+                            "bank_name": bank_name
+                        }
+                    else:
+                        print(f"✓ Bank already exists: {normalized_bank}")
+                        result["steps"]["bank_creation"] = {
+                            "status": "exists",
+                            "bank_id": normalized_bank
+                        }
+                except Exception as e:
+                    print(f"⚠ Error checking/creating bank: {e}")
+                    result["steps"]["bank_creation"] = {
+                        "status": "error",
+                        "error": str(e)
+                    }
+                    # Continue anyway - let foreign key constraints catch if there's a real issue
+
+            # Step 0.2: Ensure policy type exists in database (auto-create if missing)
+            if policy_type:
+                try:
+                    print("\n" + "="*60)
+                    print("Step 0.2: Ensuring policy type exists in database...")
+                    print("="*60)
+
+                    existing_policy = self.db_service.get_policy_type(normalized_type)
+                    if not existing_policy:
+                        # Auto-create policy type with normalized ID
+                        policy_name = normalized_type.replace('-', ' ').title()
+                        self.db_service.create_policy_type(
+                            policy_type_id=normalized_type,
+                            policy_name=policy_name,
+                            description=f"Auto-created policy type: {policy_name}",
+                            category=normalized_type
+                        )
+                        print(f"✓ Created policy type: {normalized_type} ({policy_name})")
+                        result["steps"]["policy_type_creation"] = {
+                            "status": "created",
+                            "policy_type_id": normalized_type,
+                            "policy_name": policy_name
+                        }
+                    else:
+                        print(f"✓ Policy type already exists: {normalized_type}")
+                        result["steps"]["policy_type_creation"] = {
+                            "status": "exists",
+                            "policy_type_id": normalized_type
+                        }
+                except Exception as e:
+                    print(f"⚠ Error checking/creating policy type: {e}")
+                    result["steps"]["policy_type_creation"] = {
+                        "status": "error",
+                        "error": str(e)
+                    }
+                    # Continue anyway - let foreign key constraints catch if there's a real issue
+
             # Parse S3 URL to extract bucket and key
             print("\n" + "="*60)
             print("Step 0: Parsing S3 URL...")
@@ -207,10 +280,10 @@ class UnderwritingWorkflow:
                             'extraction_method': 'textract'
                         })
 
-                    # Save to database
+                    # Save to database (use normalized IDs)
                     saved_query_ids = self.db_service.save_extraction_queries(
-                        bank_id=bank_id,
-                        policy_type_id=policy_type,
+                        bank_id=normalized_bank if bank_id else None,
+                        policy_type_id=normalized_type,
                         queries_data=queries_data,
                         document_hash=document_hash,
                         source_document=s3_url
@@ -258,10 +331,10 @@ class UnderwritingWorkflow:
                     rules_for_db = self._parse_drl_rules(drl_content)
 
                     if rules_for_db:
-                        # Save to database
+                        # Save to database (use normalized IDs)
                         saved_ids = self.db_service.save_extracted_rules(
-                            bank_id=bank_id,
-                            policy_type_id=policy_type,
+                            bank_id=normalized_bank if bank_id else None,
+                            policy_type_id=normalized_type,
                             rules=rules_for_db,
                             source_document=s3_key,
                             document_hash=document_hash
@@ -296,11 +369,11 @@ class UnderwritingWorkflow:
                         policy_type=policy_type
                     )
 
-                    # Save to database
+                    # Save to database (use normalized IDs)
                     if hierarchical_rules:
                         saved_rule_ids = self.db_service.save_hierarchical_rules(
-                            bank_id=bank_id,
-                            policy_type_id=policy_type,
+                            bank_id=normalized_bank if bank_id else None,
+                            policy_type_id=normalized_type,
                             rules_tree=hierarchical_rules,
                             document_hash=document_hash,
                             source_document=s3_key
