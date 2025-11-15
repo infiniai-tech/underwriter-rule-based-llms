@@ -91,7 +91,13 @@ flowchart TD
     HierarchicalAgent --> GenerateTree[Generate Tree Structure:<br/>- Parent-child relationships<br/>- Unlimited nesting depth<br/>- Rule dependencies]
     GenerateTree --> SaveHierarchical[Save to hierarchical_rules:<br/>- rule_id (1.1.1)<br/>- parent_id<br/>- level, order_index<br/>- name, description<br/>- expected, confidence]
 
-    SaveHierarchical --> Step5[Step 5: Automated Drools Deployment]
+    SaveHierarchical --> Step47[Step 4.7: Generate Test Cases]
+
+    Step47 --> TestCaseGen[TestCaseGenerator<br/>LLM Analyzes Policy + Rules]
+    TestCaseGen --> GenerateTests[Generate 5-10 Test Cases:<br/>- Positive cases<br/>- Negative cases<br/>- Boundary cases<br/>- Edge cases]
+    GenerateTests --> SaveTestCases[Save to test_cases:<br/>- test_case_name<br/>- description, category<br/>- applicant_data, policy_data<br/>- expected_decision<br/>- generation_method: llm/template]
+
+    SaveTestCases --> Step5[Step 5: Automated Drools Deployment]
 
     Step5 --> TempDir[Create Temporary Directory]
     TempDir --> SaveDRL[Save DRL File]
@@ -253,13 +259,17 @@ erDiagram
     banks ||--o{ extracted_rules : "has many"
     banks ||--o{ hierarchical_rules : "has many"
     banks ||--o{ policy_extraction_queries : "has many"
+    banks ||--o{ test_cases : "has many"
 
     policy_types ||--o{ rule_containers : "has many"
     policy_types ||--o{ extracted_rules : "has many"
     policy_types ||--o{ hierarchical_rules : "has many"
     policy_types ||--o{ policy_extraction_queries : "has many"
+    policy_types ||--o{ test_cases : "has many"
 
     hierarchical_rules ||--o{ hierarchical_rules : "parent-child"
+
+    test_cases ||--o{ test_case_executions : "has many"
 
     rule_containers ||--o{ container_deployment_history : "has many"
     rule_containers ||--o{ rule_requests : "has many"
@@ -366,6 +376,42 @@ erDiagram
         int status_code
         text error_message
         timestamp created_at
+    }
+
+    test_cases {
+        serial id PK
+        varchar bank_id FK
+        varchar policy_type_id FK
+        varchar test_case_name
+        text description
+        varchar category
+        int priority
+        jsonb applicant_data
+        jsonb policy_data
+        varchar expected_decision
+        text[] expected_reasons
+        int expected_risk_category
+        varchar document_hash
+        boolean is_auto_generated
+        varchar generation_method
+        boolean is_active
+        timestamp created_at
+    }
+
+    test_case_executions {
+        serial id PK
+        int test_case_id FK
+        varchar execution_id
+        varchar container_id
+        varchar actual_decision
+        text[] actual_reasons
+        int actual_risk_category
+        jsonb response_payload
+        boolean test_passed
+        text pass_reason
+        text fail_reason
+        int execution_time_ms
+        timestamp executed_at
     }
 ```
 
@@ -697,11 +743,20 @@ graph TB
 - Fallback to PyPDF2 + LLM when Textract unavailable
 - Pre-signed URLs for secure file access (24h expiration)
 
+### 14. Automated Test Case Generation ✨ NEW!
+- **Step 4.7**: LLM generates comprehensive test cases during policy processing
+- 5-10 test cases per policy covering all scenarios
+- Four categories: positive, negative, boundary, edge_case
+- Stored in `test_cases` table with expected results
+- Execution tracking in `test_case_executions` table
+- Returned in GET /api/v1/policies with `include_test_cases=true`
+- Template-based fallback when LLM fails
+
 ---
 
 ## Complete Workflow Steps Summary
 
-### Policy Processing Workflow (9 Steps)
+### Policy Processing Workflow (10 Steps)
 
 **Step 0**: Parse S3 URL and auto-generate container ID
 - Format: `{bank_id}-{policy_type}-underwriting-rules`
@@ -751,6 +806,13 @@ graph TB
 - Parent-child relationships, unlimited nesting
 - Save to `hierarchical_rules` table
 - Typical output: 87 rules in hierarchy
+
+**Step 4.7**: Generate Test Cases ✨ NEW!
+- LLM analyzes policy text, extracted rules, and hierarchical rules
+- Generates 5-10 comprehensive test scenarios
+- Covers positive, negative, boundary, and edge cases
+- Save to `test_cases` table with expected results
+- Template-based fallback if LLM fails
 
 **Step 5**: Automated Drools Deployment
 - Create KJar structure (Maven project)
@@ -807,12 +869,13 @@ graph TB
 
 1. **Auto-Create Bank & Policy Type** - Prevents FK violations
 2. **Multi-Format Document Support** - PDF, Excel, Word, Text
-3. **Database Persistence** - Steps 3.5, 4.5, 4.6 save to DB
+3. **Database Persistence** - Steps 3.5, 4.5, 4.6, 4.7 save to DB
 4. **Hierarchical Rules Generation** - Tree-structured rules with LLM
 5. **User-Friendly Rule Transformation** - DRL → Natural language
 6. **Drools Hierarchical Mapper** - Single source of truth, no re-evaluation
 7. **Container-Per-Ruleset** - Dedicated Drools containers per tenant
 8. **Document Hash Versioning** - SHA-256 tracking across all tables
+9. **Automated Test Case Generation** - LLM-powered test scenarios with execution tracking
 
 ---
 
@@ -825,6 +888,7 @@ graph TB
 - [rule-agent/PolicyAnalyzerAgent.py](rule-agent/PolicyAnalyzerAgent.py) - Query generation
 - [rule-agent/RuleGeneratorAgent.py](rule-agent/RuleGeneratorAgent.py) - DRL generation
 - [rule-agent/HierarchicalRulesAgent.py](rule-agent/HierarchicalRulesAgent.py) - Tree generation
+- [rule-agent/TestCaseGenerator.py](rule-agent/TestCaseGenerator.py) - Test case generation
 
 **Rule Services:**
 - [rule-agent/DroolsService.py](rule-agent/DroolsService.py) - Drools integration
@@ -835,6 +899,7 @@ graph TB
 - [db/migrations/001_create_extracted_rules_table.sql](db/migrations/001_create_extracted_rules_table.sql)
 - [db/migrations/002_create_policy_extraction_queries_table.sql](db/migrations/002_create_policy_extraction_queries_table.sql)
 - [db/migrations/003_create_hierarchical_rules_table.sql](db/migrations/003_create_hierarchical_rules_table.sql)
+- [db/migrations/004_create_test_cases_table.sql](db/migrations/004_create_test_cases_table.sql)
 
 **API:**
 - [rule-agent/ChatService.py](rule-agent/ChatService.py) - REST endpoints
@@ -845,3 +910,4 @@ graph TB
 - [COMPLETE_HIERARCHICAL_RULES_SUMMARY.md](COMPLETE_HIERARCHICAL_RULES_SUMMARY.md) - Hierarchical rules
 - [DROOLS_MAPPER_IMPLEMENTATION.md](DROOLS_MAPPER_IMPLEMENTATION.md) - Mapper logic
 - [CONTAINER_PER_RULESET.md](CONTAINER_PER_RULESET.md) - Container architecture
+- [TEST_CASES_FEATURE.md](TEST_CASES_FEATURE.md) - Test case generation and execution

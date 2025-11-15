@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, Float, ForeignKey, CheckConstraint, Index, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY
 from sqlalchemy.sql import func
 
 logger = logging.getLogger(__name__)
@@ -295,6 +295,101 @@ class HierarchicalRule(Base):
         Index('idx_hierarchical_rules_active', 'is_active'),
         Index('idx_hierarchical_rules_hash', 'document_hash'),
         Index('idx_hierarchical_rules_level', 'level'),
+    )
+
+
+class TestCase(Base):
+    __tablename__ = 'test_cases'
+
+    id = Column(Integer, primary_key=True)
+    bank_id = Column(String(50), ForeignKey('banks.bank_id', ondelete='CASCADE'), nullable=False)
+    policy_type_id = Column(String(50), ForeignKey('policy_types.policy_type_id', ondelete='CASCADE'), nullable=False)
+
+    # Test case metadata
+    test_case_name = Column(String(200), nullable=False)
+    description = Column(Text)
+    category = Column(String(100))  # 'boundary', 'positive', 'negative', 'edge_case', 'regression'
+    priority = Column(Integer, default=1)  # 1=high, 2=medium, 3=low
+
+    # Test data
+    applicant_data = Column(JSONB, nullable=False)
+    policy_data = Column(JSONB)
+
+    # Expected results
+    expected_decision = Column(String(50))  # 'approved', 'rejected', 'pending'
+    expected_reasons = Column(ARRAY(Text))  # Array of expected reasons
+    expected_risk_category = Column(Integer)  # Expected risk score 1-5
+
+    # Metadata
+    document_hash = Column(String(64))
+    source_document = Column(String(500))
+
+    # Auto-generated flag
+    is_auto_generated = Column(Boolean, default=False)
+    generation_method = Column(String(50))  # 'llm', 'manual', 'template', 'boundary_analysis'
+
+    # Active/versioning
+    is_active = Column(Boolean, default=True)
+    version = Column(Integer, default=1)
+
+    # Audit fields
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_by = Column(String(100))
+
+    # Relationships
+    bank = relationship("Bank")
+    policy_type = relationship("PolicyType")
+    executions = relationship("TestCaseExecution", back_populates="test_case", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index('idx_test_cases_bank_policy', 'bank_id', 'policy_type_id'),
+        Index('idx_test_cases_category', 'category'),
+        Index('idx_test_cases_priority', 'priority'),
+        Index('idx_test_cases_active', 'is_active'),
+        Index('idx_test_cases_document_hash', 'document_hash'),
+    )
+
+
+class TestCaseExecution(Base):
+    __tablename__ = 'test_case_executions'
+
+    id = Column(Integer, primary_key=True)
+    test_case_id = Column(Integer, ForeignKey('test_cases.id', ondelete='CASCADE'), nullable=False)
+
+    # Execution details
+    execution_id = Column(String(100), nullable=False)  # UUID for tracking
+    container_id = Column(String(200))  # Which Drools container was used
+
+    # Actual results
+    actual_decision = Column(String(50))
+    actual_reasons = Column(ARRAY(Text))
+    actual_risk_category = Column(Integer)
+
+    # Full response
+    request_payload = Column(JSONB)
+    response_payload = Column(JSONB)
+
+    # Test result
+    test_passed = Column(Boolean)
+    pass_reason = Column(Text)
+    fail_reason = Column(Text)
+
+    # Performance metrics
+    execution_time_ms = Column(Integer)
+
+    # Audit fields
+    executed_at = Column(DateTime, default=datetime.utcnow)
+    executed_by = Column(String(100))
+
+    # Relationships
+    test_case = relationship("TestCase", back_populates="executions")
+
+    __table_args__ = (
+        Index('idx_test_executions_test_case', 'test_case_id'),
+        Index('idx_test_executions_execution_id', 'execution_id'),
+        Index('idx_test_executions_passed', 'test_passed'),
+        Index('idx_test_executions_executed_at', 'executed_at'),
     )
 
 
@@ -1048,6 +1143,256 @@ class DatabaseService:
                 })
 
             return result
+
+    # ==================== TEST CASES METHODS ====================
+
+    def save_test_cases(self, bank_id: str, policy_type_id: str, test_cases: List[Dict[str, Any]],
+                       document_hash: str = None, source_document: str = None) -> List[int]:
+        """
+        Save multiple test cases to the database
+
+        Args:
+            bank_id: Bank identifier
+            policy_type_id: Policy type identifier
+            test_cases: List of test case dictionaries
+            document_hash: Optional document hash
+            source_document: Optional source document path/URL
+
+        Returns:
+            List of created test case IDs
+        """
+        with self.get_session() as session:
+            test_case_ids = []
+
+            for tc in test_cases:
+                test_case = TestCase(
+                    bank_id=bank_id,
+                    policy_type_id=policy_type_id,
+                    test_case_name=tc.get('test_case_name'),
+                    description=tc.get('description'),
+                    category=tc.get('category', 'positive'),
+                    priority=tc.get('priority', 1),
+                    applicant_data=tc.get('applicant_data'),
+                    policy_data=tc.get('policy_data'),
+                    expected_decision=tc.get('expected_decision'),
+                    expected_reasons=tc.get('expected_reasons', []),
+                    expected_risk_category=tc.get('expected_risk_category'),
+                    document_hash=document_hash,
+                    source_document=source_document,
+                    is_auto_generated=tc.get('is_auto_generated', False),
+                    generation_method=tc.get('generation_method', 'manual'),
+                    created_by=tc.get('created_by', 'system')
+                )
+
+                session.add(test_case)
+                session.flush()  # Get the ID
+                test_case_ids.append(test_case.id)
+
+            session.commit()
+            logger.info(f"Saved {len(test_case_ids)} test cases for {bank_id}/{policy_type_id}")
+            return test_case_ids
+
+    def get_test_cases(self, bank_id: str, policy_type_id: str,
+                       category: str = None, is_active: bool = True) -> List[Dict[str, Any]]:
+        """
+        Get test cases for a bank and policy type
+
+        Args:
+            bank_id: Bank identifier
+            policy_type_id: Policy type identifier
+            category: Optional filter by category
+            is_active: Filter by active status (default True)
+
+        Returns:
+            List of test case dictionaries
+        """
+        with self.get_session() as session:
+            query = session.query(TestCase).filter_by(
+                bank_id=bank_id,
+                policy_type_id=policy_type_id,
+                is_active=is_active
+            )
+
+            if category:
+                query = query.filter_by(category=category)
+
+            test_cases = query.order_by(TestCase.priority, TestCase.created_at).all()
+
+            return [{
+                'id': tc.id,
+                'test_case_name': tc.test_case_name,
+                'description': tc.description,
+                'category': tc.category,
+                'priority': tc.priority,
+                'applicant_data': tc.applicant_data,
+                'policy_data': tc.policy_data,
+                'expected_decision': tc.expected_decision,
+                'expected_reasons': tc.expected_reasons,
+                'expected_risk_category': tc.expected_risk_category,
+                'is_auto_generated': tc.is_auto_generated,
+                'generation_method': tc.generation_method,
+                'created_at': tc.created_at.isoformat() if tc.created_at else None
+            } for tc in test_cases]
+
+    def get_test_case_by_id(self, test_case_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single test case by ID"""
+        with self.get_session() as session:
+            tc = session.query(TestCase).filter_by(id=test_case_id).first()
+
+            if not tc:
+                return None
+
+            return {
+                'id': tc.id,
+                'bank_id': tc.bank_id,
+                'policy_type_id': tc.policy_type_id,
+                'test_case_name': tc.test_case_name,
+                'description': tc.description,
+                'category': tc.category,
+                'priority': tc.priority,
+                'applicant_data': tc.applicant_data,
+                'policy_data': tc.policy_data,
+                'expected_decision': tc.expected_decision,
+                'expected_reasons': tc.expected_reasons,
+                'expected_risk_category': tc.expected_risk_category,
+                'is_auto_generated': tc.is_auto_generated,
+                'generation_method': tc.generation_method,
+                'document_hash': tc.document_hash,
+                'source_document': tc.source_document,
+                'created_at': tc.created_at.isoformat() if tc.created_at else None,
+                'updated_at': tc.updated_at.isoformat() if tc.updated_at else None
+            }
+
+    def save_test_execution(self, test_case_id: int, execution_data: Dict[str, Any]) -> int:
+        """
+        Save test case execution results
+
+        Args:
+            test_case_id: Test case ID
+            execution_data: Dictionary containing execution details
+
+        Returns:
+            Execution ID
+        """
+        with self.get_session() as session:
+            execution = TestCaseExecution(
+                test_case_id=test_case_id,
+                execution_id=execution_data.get('execution_id'),
+                container_id=execution_data.get('container_id'),
+                actual_decision=execution_data.get('actual_decision'),
+                actual_reasons=execution_data.get('actual_reasons', []),
+                actual_risk_category=execution_data.get('actual_risk_category'),
+                request_payload=execution_data.get('request_payload'),
+                response_payload=execution_data.get('response_payload'),
+                test_passed=execution_data.get('test_passed'),
+                pass_reason=execution_data.get('pass_reason'),
+                fail_reason=execution_data.get('fail_reason'),
+                execution_time_ms=execution_data.get('execution_time_ms'),
+                executed_by=execution_data.get('executed_by', 'system')
+            )
+
+            session.add(execution)
+            session.commit()
+            logger.info(f"Saved test execution {execution.execution_id} for test case {test_case_id}")
+            return execution.id
+
+    def get_test_executions(self, test_case_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get test execution history for a test case
+
+        Args:
+            test_case_id: Test case ID
+            limit: Maximum number of executions to return (default 10)
+
+        Returns:
+            List of execution dictionaries
+        """
+        with self.get_session() as session:
+            executions = session.query(TestCaseExecution).filter_by(
+                test_case_id=test_case_id
+            ).order_by(TestCaseExecution.executed_at.desc()).limit(limit).all()
+
+            return [{
+                'id': ex.id,
+                'execution_id': ex.execution_id,
+                'container_id': ex.container_id,
+                'actual_decision': ex.actual_decision,
+                'actual_reasons': ex.actual_reasons,
+                'actual_risk_category': ex.actual_risk_category,
+                'test_passed': ex.test_passed,
+                'pass_reason': ex.pass_reason,
+                'fail_reason': ex.fail_reason,
+                'execution_time_ms': ex.execution_time_ms,
+                'executed_at': ex.executed_at.isoformat() if ex.executed_at else None,
+                'executed_by': ex.executed_by
+            } for ex in executions]
+
+    def get_test_case_summary(self, bank_id: str = None, policy_type_id: str = None) -> List[Dict[str, Any]]:
+        """
+        Get test case summary statistics using the database view
+
+        Args:
+            bank_id: Optional bank filter
+            policy_type_id: Optional policy type filter
+
+        Returns:
+            List of test case summaries with execution statistics
+        """
+        with self.get_session() as session:
+            # Query the view directly
+            query = "SELECT * FROM test_case_summary WHERE 1=1"
+            params = {}
+
+            if bank_id:
+                query += " AND bank_id = :bank_id"
+                params['bank_id'] = bank_id
+
+            if policy_type_id:
+                query += " AND policy_type_id = :policy_type_id"
+                params['policy_type_id'] = policy_type_id
+
+            query += " ORDER BY priority, test_case_name"
+
+            result = session.execute(text(query), params)
+            rows = result.fetchall()
+
+            return [{
+                'id': row[0],
+                'bank_id': row[1],
+                'policy_type_id': row[2],
+                'test_case_name': row[3],
+                'category': row[4],
+                'priority': row[5],
+                'is_auto_generated': row[6],
+                'created_at': row[7].isoformat() if row[7] else None,
+                'total_executions': row[8],
+                'passed_executions': row[9],
+                'failed_executions': row[10],
+                'pass_rate': float(row[11]) if row[11] else 0.0,
+                'last_execution_at': row[12].isoformat() if row[12] else None
+            } for row in rows]
+
+    def delete_test_case(self, test_case_id: int) -> bool:
+        """
+        Soft delete a test case (sets is_active to False)
+
+        Args:
+            test_case_id: Test case ID
+
+        Returns:
+            True if deleted, False if not found
+        """
+        with self.get_session() as session:
+            test_case = session.query(TestCase).filter_by(id=test_case_id).first()
+
+            if not test_case:
+                return False
+
+            test_case.is_active = False
+            test_case.updated_at = datetime.utcnow()
+            session.commit()
+            logger.info(f"Soft deleted test case {test_case_id}")
+            return True
 
 
 # Singleton instance
