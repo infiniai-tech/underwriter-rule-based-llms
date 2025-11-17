@@ -228,14 +228,19 @@ paths:
     get:
       tags:
         - Customer API
-      summary: Query specific policy container with extraction details
+      summary: Query specific policy container with extraction details and test cases
       description: |
         Check if rules are deployed for a specific bank+policy combination.
 
         **New in v2.1:**
         - Optional inclusion of extraction queries with confidence scores
         - Optional inclusion of extracted rules
+        - Optional inclusion of hierarchical rules tree
         - Provides transparency into the rule extraction process
+
+        **New in v2.2:**
+        - Optional inclusion of auto-generated test cases
+        - Test case statistics by category (positive, negative, boundary, edge_case)
       operationId: queryPolicies
       parameters:
         - name: bank_id
@@ -275,6 +280,14 @@ paths:
             type: boolean
             default: false
           description: Include hierarchical rules tree with parent-child dependencies
+          example: true
+        - name: include_test_cases
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Include auto-generated test cases for policy validation
           example: true
       responses:
         '200':
@@ -316,6 +329,31 @@ paths:
                     type: integer
                     description: Number of top-level hierarchical rules (only if include_hierarchical_rules is true)
                     example: 5
+                  test_cases:
+                    type: array
+                    description: Auto-generated test cases (only if include_test_cases is true)
+                    items:
+                      $ref: '#/components/schemas/TestCase'
+                  test_cases_count:
+                    type: integer
+                    description: Total number of test cases (only if include_test_cases is true)
+                    example: 7
+                  test_cases_by_category:
+                    type: object
+                    description: Test case statistics by category (only if include_test_cases is true)
+                    properties:
+                      positive:
+                        type: integer
+                        example: 3
+                      negative:
+                        type: integer
+                        example: 2
+                      boundary:
+                        type: integer
+                        example: 1
+                      edge_case:
+                        type: integer
+                        example: 1
               examples:
                 basic-response:
                   summary: Basic response (no optional data)
@@ -2102,6 +2140,95 @@ components:
           format: date-time
           description: Timestamp when the record was last updated
           example: "2025-11-12T09:00:00"
+
+    TestCase:
+      type: object
+      description: Auto-generated test case for policy evaluation
+      properties:
+        id:
+          type: integer
+          description: Unique test case identifier
+          example: 1
+        test_case_name:
+          type: string
+          description: Descriptive name of the test case
+          example: "Ideal Applicant - Mid-Age, Good Health"
+        description:
+          type: string
+          description: Detailed description of the test scenario
+          example: "35-year-old non-smoker with excellent health, high income, and good credit score. Should be approved with low risk."
+        category:
+          type: string
+          enum:
+            - positive
+            - negative
+            - boundary
+            - edge_case
+            - regression
+          description: Test case category
+          example: "positive"
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 3
+          description: Test priority (1=high, 2=medium, 3=low)
+          example: 1
+        applicant_data:
+          type: object
+          description: JSONB object containing applicant details
+          example:
+            age: 35
+            annualIncome: 75000
+            creditScore: 720
+            healthConditions: "good"
+            smoker: false
+        policy_data:
+          type: object
+          description: JSONB object containing policy details
+          example:
+            coverageAmount: 500000
+            termYears: 20
+            type: "term_life"
+        expected_decision:
+          type: string
+          enum:
+            - approved
+            - rejected
+            - pending
+          description: Expected decision outcome
+          example: "approved"
+        expected_reasons:
+          type: array
+          items:
+            type: string
+          description: Array of expected approval/rejection reasons
+          example:
+            - "Meets all eligibility criteria"
+            - "Low risk profile"
+        expected_risk_category:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Expected risk score (1=lowest risk, 5=highest risk)
+          example: 2
+        is_auto_generated:
+          type: boolean
+          description: True if generated by LLM, false if manually created
+          example: true
+        generation_method:
+          type: string
+          enum:
+            - llm
+            - manual
+            - template
+            - boundary_analysis
+          description: Method used to generate the test case
+          example: "llm"
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when test case was created
+          example: "2025-11-15T10:30:00"
 
     Error:
       type: object

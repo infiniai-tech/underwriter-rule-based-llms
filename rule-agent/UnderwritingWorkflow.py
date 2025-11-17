@@ -17,6 +17,7 @@ from PolicyAnalyzerAgent import PolicyAnalyzerAgent
 from TextractService import TextractService
 from RuleGeneratorAgent import RuleGeneratorAgent
 from HierarchicalRulesAgent import HierarchicalRulesAgent
+from TestCaseGenerator import TestCaseGenerator
 from DroolsDeploymentService import DroolsDeploymentService
 from S3Service import S3Service
 from ExcelRulesExporter import ExcelRulesExporter
@@ -48,6 +49,7 @@ class UnderwritingWorkflow:
         self.textract = TextractService()
         self.rule_generator = RuleGeneratorAgent(llm)
         self.hierarchical_rules_agent = HierarchicalRulesAgent(llm)
+        self.test_case_generator = TestCaseGenerator(llm)
         self.drools_deployment = DroolsDeploymentService()
         self.s3_service = S3Service()
         self.excel_exporter = ExcelRulesExporter()
@@ -398,6 +400,63 @@ class UnderwritingWorkflow:
                     import traceback
                     traceback.print_exc()
                     result["steps"]["save_hierarchical_rules"] = {
+                        "status": "error",
+                        "message": str(e)
+                    }
+
+            # Step 4.7: Generate and save test cases
+            if bank_id and policy_type:
+                try:
+                    print("\n" + "="*60)
+                    print("Step 4.7: Generating test cases...")
+                    print("="*60)
+
+                    # Gather rules for context
+                    extracted_rules_data = result["steps"].get("save_drools_rules", {}).get("rules", [])
+                    hierarchical_rules_data = hierarchical_rules if 'hierarchical_rules' in locals() else None
+
+                    # Generate test cases using LLM
+                    test_cases = self.test_case_generator.generate_test_cases(
+                        policy_text=document_text,
+                        extracted_rules=extracted_rules_data,
+                        hierarchical_rules=hierarchical_rules_data,
+                        policy_type=policy_type
+                    )
+
+                    if test_cases:
+                        # Save to database
+                        saved_test_case_ids = self.db_service.save_test_cases(
+                            bank_id=normalized_bank if bank_id else None,
+                            policy_type_id=normalized_type,
+                            test_cases=test_cases,
+                            document_hash=document_hash,
+                            source_document=s3_url
+                        )
+
+                        print(f"✓ Generated and saved {len(saved_test_case_ids)} test cases")
+                        result["steps"]["generate_test_cases"] = {
+                            "status": "success",
+                            "count": len(saved_test_case_ids),
+                            "test_case_ids": saved_test_case_ids,
+                            "categories": {
+                                "positive": len([tc for tc in test_cases if tc.get('category') == 'positive']),
+                                "negative": len([tc for tc in test_cases if tc.get('category') == 'negative']),
+                                "boundary": len([tc for tc in test_cases if tc.get('category') == 'boundary']),
+                                "edge_case": len([tc for tc in test_cases if tc.get('category') == 'edge_case'])
+                            }
+                        }
+                    else:
+                        print("⚠ No test cases generated")
+                        result["steps"]["generate_test_cases"] = {
+                            "status": "warning",
+                            "message": "No test cases generated"
+                        }
+
+                except Exception as e:
+                    print(f"⚠ Failed to generate/save test cases: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    result["steps"]["generate_test_cases"] = {
                         "status": "error",
                         "message": str(e)
                     }

@@ -647,7 +647,7 @@ def list_bank_policies(bank_id):
 @app.route(ROUTE + '/api/v1/policies', methods=['GET'])
 def query_policies():
     """
-    Query for available policy containers with extraction queries and rules
+    Query for available policy containers with extraction queries, rules, and test cases
 
     Query parameters:
     - bank_id: Bank identifier (required)
@@ -655,6 +655,7 @@ def query_policies():
     - include_queries: Include extraction queries (optional, default: false)
     - include_rules: Include extracted rules (optional, default: false)
     - include_hierarchical_rules: Include hierarchical rules tree (optional, default: false)
+    - include_test_cases: Include test cases (optional, default: false)
     """
     try:
         bank_id = request.args.get('bank_id')
@@ -662,6 +663,7 @@ def query_policies():
         include_queries = request.args.get('include_queries', 'false').lower() == 'true'
         include_rules = request.args.get('include_rules', 'false').lower() == 'true'
         include_hierarchical_rules = request.args.get('include_hierarchical_rules', 'false').lower() == 'true'
+        include_test_cases = request.args.get('include_test_cases', 'false').lower() == 'true'
 
         if not bank_id or not policy_type:
             return jsonify({
@@ -748,6 +750,25 @@ def query_policies():
             )
             response_data["hierarchical_rules"] = hierarchical_rules
             response_data["hierarchical_rules_count"] = len(hierarchical_rules)
+
+        # Include test cases if requested
+        if include_test_cases:
+            test_cases = db_service.get_test_cases(
+                bank_id=bank_id,
+                policy_type_id=policy_type,
+                is_active=True
+            )
+            response_data["test_cases"] = test_cases
+            response_data["test_cases_count"] = len(test_cases)
+
+            # Add test case statistics by category
+            category_stats = {
+                "positive": len([tc for tc in test_cases if tc.get('category') == 'positive']),
+                "negative": len([tc for tc in test_cases if tc.get('category') == 'negative']),
+                "boundary": len([tc for tc in test_cases if tc.get('category') == 'boundary']),
+                "edge_case": len([tc for tc in test_cases if tc.get('category') == 'edge_case'])
+            }
+            response_data["test_cases_by_category"] = category_stats
 
         return jsonify(response_data)
     except Exception as e:
