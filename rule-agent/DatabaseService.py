@@ -568,11 +568,29 @@ class DatabaseService:
 
     # Container operations
     def register_container(self, container_data: Dict[str, Any]) -> RuleContainer:
-        """Register a new rule container"""
+        """Register a new rule container or update if already exists"""
         with self.get_session() as session:
             # Ensure bank and policy type exist
             bank_id = container_data.get('bank_id')
             policy_type_id = container_data.get('policy_type_id')
+            container_id = container_data.get('container_id')
+
+            # Check if container with this container_id already exists
+            existing_container = session.query(RuleContainer).filter_by(
+                container_id=container_id
+            ).first()
+
+            if existing_container:
+                # Update existing container
+                for key, value in container_data.items():
+                    if hasattr(existing_container, key) and key != 'id':
+                        setattr(existing_container, key, value)
+                existing_container.updated_at = datetime.utcnow()
+                existing_container.is_active = True
+                session.commit()
+                session.refresh(existing_container)
+                logger.info(f"Updated existing container {container_id} for {bank_id}/{policy_type_id}")
+                return existing_container
 
             # Deactivate old containers for this bank+policy combination
             old_containers = session.query(RuleContainer).filter_by(
@@ -592,7 +610,7 @@ class DatabaseService:
             session.commit()
             session.refresh(container)
 
-            logger.info(f"Registered container {container.container_id} for {bank_id}/{policy_type_id}")
+            logger.info(f"Registered new container {container.container_id} for {bank_id}/{policy_type_id}")
             return container
 
     def _container_to_dict(self, container: RuleContainer) -> Dict[str, Any]:
